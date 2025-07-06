@@ -1,4 +1,5 @@
 pub mod atom;
-pub mod datalog;
 pub mod internalizer;
+pub mod naive;
+pub mod semi_naive;
 pub mod value;

@@ -1,38 +1,29 @@
+//! Semi-naive implementation of Datalog
+//!
+//! One step up from the naive implementation. The big idea is to introduce a notion of "stable" and "delta"
+//! facts in relations. We know that we have already checked all combinations of stable facts, so we can skip
+//! them and new combinations that at least binds to one delta fact.
+//!
+//! The big changes are in the `find_substitutions` function and the relation struct.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 /// A term in a Datalog program - either a value or a variable
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term<T> {
     Value(T),
     Variable(String),
 }
 
-impl<T: PartialEq> PartialEq for Term<T> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Term::Value(a), Term::Value(b)) => a == b,
-            (Term::Variable(a), Term::Variable(b)) => a == b,
-            _ => false,
-        }
+impl<T> Term<T> {
+    pub fn value(value: T) -> Self {
+        Term::Value(value)
     }
-}
 
-impl<T: Eq> Eq for Term<T> {}
-
-impl<T: Hash> Hash for Term<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Term::Value(v) => {
-                0.hash(state);
-                v.hash(state);
-            }
-            Term::Variable(v) => {
-                1.hash(state);
-                v.hash(state);
-            }
-        }
+    pub fn variable<S: Into<String>>(name: S) -> Self {
+        Term::Variable(name.into())
     }
 }
 
@@ -48,6 +39,20 @@ impl<T: fmt::Display> fmt::Display for Term<T> {
 /// A tuple of terms representing a fact or goal
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tuple<T>(pub Vec<Term<T>>);
+
+impl<T> Tuple<T> {
+    pub fn new(terms: Vec<Term<T>>) -> Self {
+        Tuple(terms)
+    }
+
+    pub fn from_values(values: Vec<T>) -> Self {
+        Tuple(values.into_iter().map(Term::value).collect())
+    }
+
+    pub fn from_variables<S: Into<String>>(vars: Vec<S>) -> Self {
+        Tuple(vars.into_iter().map(|v| Term::variable(v)).collect())
+    }
+}
 
 impl<T: fmt::Display> fmt::Display for Tuple<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -153,6 +158,12 @@ pub struct Rule<T> {
     pub body: Vec<(String, Tuple<T>)>,
 }
 
+impl<T> Rule<T> {
+    pub fn new() -> RuleBuilder<T> {
+        RuleBuilder::new()
+    }
+}
+
 impl<T: fmt::Display> fmt::Display for Rule<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, (rel, tuple)) in self.heads.iter().enumerate() {
@@ -169,6 +180,38 @@ impl<T: fmt::Display> fmt::Display for Rule<T> {
             write!(f, "{}({})", rel, tuple)?;
         }
         Ok(())
+    }
+}
+
+/// Builder for creating Datalog rules
+pub struct RuleBuilder<T> {
+    heads: Vec<(String, Tuple<T>)>,
+    body: Vec<(String, Tuple<T>)>,
+}
+
+impl<T> RuleBuilder<T> {
+    pub fn new() -> Self {
+        RuleBuilder {
+            heads: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    pub fn head<S: Into<String>>(mut self, relation: S, tuple: Tuple<T>) -> Self {
+        self.heads.push((relation.into(), tuple));
+        self
+    }
+
+    pub fn body<S: Into<String>>(mut self, relation: S, tuple: Tuple<T>) -> Self {
+        self.body.push((relation.into(), tuple));
+        self
+    }
+
+    pub fn build(self) -> Rule<T> {
+        Rule {
+            heads: self.heads,
+            body: self.body,
+        }
     }
 }
 
@@ -431,38 +474,6 @@ where
     }
 }
 
-// Helper macros for ergonomic API
-#[macro_export]
-macro_rules! term {
-    ($value:expr) => {
-        Term::Value($value)
-    };
-}
-
-#[macro_export]
-macro_rules! var {
-    ($name:expr) => {
-        Term::Variable($name.to_string())
-    };
-}
-
-#[macro_export]
-macro_rules! tuple {
-    ($($term:expr),*) => {
-        Tuple(vec![$($term),*])
-    };
-}
-
-#[macro_export]
-macro_rules! rule {
-    ($($head_rel:expr, $head_tuple:expr),+ => $($body_rel:expr, $body_tuple:expr),*) => {
-        Rule {
-            heads: vec![$(($head_rel.to_string(), $head_tuple)),+],
-            body: vec![$(($body_rel.to_string(), $body_tuple)),*],
-        }
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,11 +500,11 @@ mod tests {
         db.insert_fact("parent", vec!["bob", "charlie"]);
 
         // Rule: grandparent(X, Z) :- parent(X, Y), parent(Y, Z)
-        let grandparent_rule = rule!(
-            "grandparent", tuple![var!("X"), var!("Z")] =>
-            "parent", tuple![var!("X"), var!("Y")],
-            "parent", tuple![var!("Y"), var!("Z")]
-        );
+        let grandparent_rule = Rule::new()
+            .head("grandparent", Tuple::from_variables(vec!["X", "Z"]))
+            .body("parent", Tuple::from_variables(vec!["X", "Y"]))
+            .body("parent", Tuple::from_variables(vec!["Y", "Z"]))
+            .build();
 
         db.add_rule(grandparent_rule);
         db.evaluate();
@@ -511,11 +522,11 @@ mod tests {
         db.insert_fact("edge", vec![3, 4]);
 
         // Rule: path(X, Z) :- edge(X, Y), edge(Y, Z)
-        let path_rule = rule!(
-            "path", tuple![var!("X"), var!("Z")] =>
-            "edge", tuple![var!("X"), var!("Y")],
-            "edge", tuple![var!("Y"), var!("Z")]
-        );
+        let path_rule = Rule::new()
+            .head("path", Tuple::from_variables(vec!["X", "Z"]))
+            .body("edge", Tuple::from_variables(vec!["X", "Y"]))
+            .body("edge", Tuple::from_variables(vec!["Y", "Z"]))
+            .build();
 
         db.add_rule(path_rule);
         db.evaluate();
@@ -534,11 +545,11 @@ mod tests {
 
         // Rule with multiple heads:
         // human(X), mortal(X) :- person(X)
-        let multi_head_rule = rule!(
-            "human", tuple![var!("X")],
-            "mortal", tuple![var!("X")] =>
-            "person", tuple![var!("X")]
-        );
+        let multi_head_rule = Rule::new()
+            .head("human", Tuple::from_variables(vec!["X"]))
+            .head("mortal", Tuple::from_variables(vec!["X"]))
+            .body("person", Tuple::from_variables(vec!["X"]))
+            .build();
 
         db.add_rule(multi_head_rule);
         db.evaluate();
@@ -592,10 +603,13 @@ mod tests {
         );
 
         // Rule: adult(X, Age) :- person(X, Age, B, A, F)
-        let adult_rule = rule!(
-            "adult", tuple![var!("X"), var!("Age")] =>
-            "person", tuple![var!("X"), var!("Age"), var!("B"), var!("A"), var!("F")]
-        );
+        let adult_rule = Rule::new()
+            .head("adult", Tuple::from_variables(vec!["X", "Age"]))
+            .body(
+                "person",
+                Tuple::from_variables(vec!["X", "Age", "B", "A", "F"]),
+            )
+            .build();
 
         db.add_rule(adult_rule);
         db.evaluate();
@@ -662,16 +676,16 @@ mod tests {
 
         // Rule: path(X, Z) :- edge(X, Y), path(Y, Z)
         // Rule: path(X, Y) :- edge(X, Y)
-        let path_rule1 = rule!(
-            "path", tuple![var!("X"), var!("Y")] =>
-            "edge", tuple![var!("X"), var!("Y")]
-        );
+        let path_rule1 = Rule::new()
+            .head("path", Tuple::from_variables(vec!["X", "Y"]))
+            .body("edge", Tuple::from_variables(vec!["X", "Y"]))
+            .build();
 
-        let path_rule2 = rule!(
-            "path", tuple![var!("X"), var!("Z")] =>
-            "edge", tuple![var!("X"), var!("Y")],
-            "path", tuple![var!("Y"), var!("Z")]
-        );
+        let path_rule2 = Rule::new()
+            .head("path", Tuple::from_variables(vec!["X", "Z"]))
+            .body("edge", Tuple::from_variables(vec!["X", "Y"]))
+            .body("path", Tuple::from_variables(vec!["Y", "Z"]))
+            .build();
 
         db.add_rule(path_rule1);
         db.add_rule(path_rule2);
@@ -690,5 +704,60 @@ mod tests {
         assert!(path_relation.contains(&vec![1, 4]));
         assert!(path_relation.contains(&vec![2, 5]));
         assert!(path_relation.contains(&vec![1, 5]));
+    }
+
+    #[test]
+    fn test_rule_builder_api() {
+        let mut db = Database::new();
+
+        db.insert_fact("parent", vec!["alice", "bob"]);
+        db.insert_fact("parent", vec!["bob", "charlie"]);
+
+        // Test the new RuleBuilder API
+        let rule = Rule::new()
+            .head("grandparent", Tuple::from_variables(vec!["X", "Z"]))
+            .body("parent", Tuple::from_variables(vec!["X", "Y"]))
+            .body("parent", Tuple::from_variables(vec!["Y", "Z"]))
+            .build();
+
+        db.add_rule(rule);
+        db.evaluate();
+
+        let grandparent_relation = db.get_relation("grandparent").unwrap();
+        assert!(grandparent_relation.contains(&vec!["alice", "charlie"]));
+    }
+
+    #[test]
+    fn test_tuple_creation_methods_int() {
+        // Test Tuple::from_values for integers
+        let value_tuple: Tuple<i32> = Tuple::from_values(vec![1, 2, 3]);
+        assert_eq!(value_tuple.0.len(), 3);
+        assert!(matches!(value_tuple.0[0], Term::Value(1)));
+        assert!(matches!(value_tuple.0[1], Term::Value(2)));
+        assert!(matches!(value_tuple.0[2], Term::Value(3)));
+
+        // Test Tuple::from_variables for integers (variable names are still strings)
+        let var_tuple: Tuple<i32> = Tuple::from_variables(vec!["X", "Y", "Z"]);
+        assert_eq!(var_tuple.0.len(), 3);
+        assert!(matches!(var_tuple.0[0], Term::Variable(ref v) if v == "X"));
+        assert!(matches!(var_tuple.0[1], Term::Variable(ref v) if v == "Y"));
+        assert!(matches!(var_tuple.0[2], Term::Variable(ref v) if v == "Z"));
+    }
+
+    #[test]
+    fn test_tuple_creation_methods_str() {
+        // Test Tuple::from_values for strings
+        let value_tuple: Tuple<&str> = Tuple::from_values(vec!["alice", "bob", "carol"]);
+        assert_eq!(value_tuple.0.len(), 3);
+        assert!(matches!(value_tuple.0[0], Term::Value("alice")));
+        assert!(matches!(value_tuple.0[1], Term::Value("bob")));
+        assert!(matches!(value_tuple.0[2], Term::Value("carol")));
+
+        // Test Tuple::from_variables for strings
+        let var_tuple: Tuple<&str> = Tuple::from_variables(vec!["X", "Y", "Z"]);
+        assert_eq!(var_tuple.0.len(), 3);
+        assert!(matches!(var_tuple.0[0], Term::Variable(ref v) if v == "X"));
+        assert!(matches!(var_tuple.0[1], Term::Variable(ref v) if v == "Y"));
+        assert!(matches!(var_tuple.0[2], Term::Variable(ref v) if v == "Z"));
     }
 }
