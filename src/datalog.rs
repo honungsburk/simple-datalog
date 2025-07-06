@@ -544,4 +544,46 @@ mod tests {
             Value::float(5.5)
         ]));
     }
+
+    #[test]
+    fn test_semi_naive_optimization() {
+        let mut db = Database::new();
+
+        // Create a chain of relationships: a->b->c->d->e
+        db.insert_fact("edge", vec![1, 2]);
+        db.insert_fact("edge", vec![2, 3]);
+        db.insert_fact("edge", vec![3, 4]);
+        db.insert_fact("edge", vec![4, 5]);
+
+        // Rule: path(X, Z) :- edge(X, Y), path(Y, Z)
+        // Rule: path(X, Y) :- edge(X, Y)
+        let path_rule1 = rule!(
+            "path", tuple![var!("X"), var!("Y")] =>
+            "edge", tuple![var!("X"), var!("Y")]
+        );
+
+        let path_rule2 = rule!(
+            "path", tuple![var!("X"), var!("Z")] =>
+            "edge", tuple![var!("X"), var!("Y")],
+            "path", tuple![var!("Y"), var!("Z")]
+        );
+
+        db.add_rule(path_rule1);
+        db.add_rule(path_rule2);
+        db.evaluate();
+
+        let path_relation = db.get_relation("path").unwrap();
+
+        // Should derive all transitive paths
+        assert!(path_relation.contains(&vec![1, 2]));
+        assert!(path_relation.contains(&vec![2, 3]));
+        assert!(path_relation.contains(&vec![3, 4]));
+        assert!(path_relation.contains(&vec![4, 5]));
+        assert!(path_relation.contains(&vec![1, 3]));
+        assert!(path_relation.contains(&vec![2, 4]));
+        assert!(path_relation.contains(&vec![3, 5]));
+        assert!(path_relation.contains(&vec![1, 4]));
+        assert!(path_relation.contains(&vec![2, 5]));
+        assert!(path_relation.contains(&vec![1, 5]));
+    }
 }
