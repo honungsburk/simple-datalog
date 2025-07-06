@@ -4,7 +4,7 @@
 //!
 //! See the `internalizer` module for more details.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Atom(u64);
 
 impl Atom {

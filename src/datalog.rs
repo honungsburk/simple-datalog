@@ -446,4 +446,102 @@ mod tests {
         assert!(mortal_relation.contains(&vec!["alice"]));
         assert!(mortal_relation.contains(&vec!["bob"]));
     }
+
+    #[test]
+    fn test_mixed_value_types() {
+        use crate::atom::Atom;
+        use crate::value::Value;
+
+        let mut db = Database::new();
+
+        // Insert facts with different value types
+        db.insert_fact(
+            "person",
+            vec![
+                Value::string("alice"),
+                Value::integer(25),
+                Value::boolean(true),
+                Value::atom(Atom::new(1)),
+                Value::float(5.5),
+            ],
+        );
+
+        db.insert_fact(
+            "person",
+            vec![
+                Value::string("bob"),
+                Value::integer(30),
+                Value::boolean(false),
+                Value::atom(Atom::new(2)),
+                Value::float(6.2),
+            ],
+        );
+
+        db.insert_fact(
+            "config",
+            vec![
+                Value::string("max_age"),
+                Value::integer(100),
+                Value::boolean(true),
+            ],
+        );
+
+        // Rule: adult(X, Age) :- person(X, Age, B, A, F)
+        let adult_rule = rule!(
+            "adult", tuple![var!("X"), var!("Age")] =>
+            "person", tuple![var!("X"), var!("Age"), var!("B"), var!("A"), var!("F")]
+        );
+
+        db.add_rule(adult_rule);
+        db.evaluate();
+
+        let person_relation = db.get_relation("person").unwrap();
+        let adult_relation = db.get_relation("adult").unwrap();
+        let config_relation = db.get_relation("config").unwrap();
+
+        // Verify facts with mixed types are stored correctly
+        assert!(person_relation.contains(&vec![
+            Value::string("alice"),
+            Value::integer(25),
+            Value::boolean(true),
+            Value::atom(Atom::new(1)),
+            Value::float(5.5)
+        ]));
+
+        assert!(person_relation.contains(&vec![
+            Value::string("bob"),
+            Value::integer(30),
+            Value::boolean(false),
+            Value::atom(Atom::new(2)),
+            Value::float(6.2)
+        ]));
+
+        assert!(config_relation.contains(&vec![
+            Value::string("max_age"),
+            Value::integer(100),
+            Value::boolean(true)
+        ]));
+
+        // Verify rule evaluation works with mixed types
+        assert!(adult_relation.contains(&vec![Value::string("alice"), Value::integer(25)]));
+
+        assert!(adult_relation.contains(&vec![Value::string("bob"), Value::integer(30)]));
+
+        // Verify different value types are distinct
+        assert!(!person_relation.contains(&vec![
+            Value::string("alice"),
+            Value::integer(25),
+            Value::boolean(false), // Different boolean
+            Value::atom(Atom::new(1)),
+            Value::float(5.5)
+        ]));
+
+        assert!(!person_relation.contains(&vec![
+            Value::string("alice"),
+            Value::integer(25),
+            Value::boolean(true),
+            Value::atom(Atom::new(3)), // Different atom
+            Value::float(5.5)
+        ]));
+    }
 }
