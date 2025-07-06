@@ -93,7 +93,8 @@ impl<T> Substitution<T> {
 #[derive(Debug, Clone)]
 pub struct Relation<T> {
     pub name: String,
-    pub tuples: HashSet<Vec<T>>,
+    pub stable: HashSet<Vec<T>>,
+    pub delta: HashSet<Vec<T>>,
 }
 
 impl<T> Relation<T>
@@ -103,24 +104,42 @@ where
     pub fn new(name: String) -> Self {
         Relation {
             name,
-            tuples: HashSet::new(),
+            stable: HashSet::new(),
+            delta: HashSet::new(),
         }
     }
 
     pub fn insert(&mut self, tuple: Vec<T>) {
-        self.tuples.insert(tuple);
+        self.delta.insert(tuple);
+    }
+
+    pub fn insert_all(&mut self, tuples: Vec<Vec<T>>) {
+        self.delta.extend(tuples);
     }
 
     pub fn contains(&self, tuple: &[T]) -> bool {
-        self.tuples.contains(tuple)
+        self.stable.contains(tuple) || self.delta.contains(tuple)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Vec<T>> {
-        self.tuples.iter()
+        self.stable_iter().chain(self.delta_iter())
+    }
+
+    pub fn stable_iter(&self) -> impl Iterator<Item = &Vec<T>> {
+        self.stable.iter()
     }
 
     pub fn len(&self) -> usize {
-        self.tuples.len()
+        self.stable.len() + self.delta.len()
+    }
+
+    pub fn delta_iter(&self) -> impl Iterator<Item = &Vec<T>> {
+        self.delta.iter()
+    }
+
+    pub fn ground(&mut self) {
+        self.stable.extend(self.delta.iter().cloned());
+        self.delta.clear();
     }
 }
 
@@ -184,6 +203,12 @@ where
         self.rules.push(rule);
     }
 
+    pub fn ground_relation(&mut self, relation_name: &str) {
+        if let Some(relation) = self.relations.get_mut(relation_name) {
+            relation.ground();
+        }
+    }
+
     pub fn insert_fact(&mut self, relation_name: &str, tuple: Vec<T>) {
         if let Some(relation) = self.relations.get_mut(relation_name) {
             relation.insert(tuple);
@@ -192,6 +217,29 @@ where
             relation.insert(tuple);
             self.relations.insert(relation_name.to_string(), relation);
         }
+    }
+
+    pub fn insert_facts(&mut self, relation_name: &str, facts: Vec<Vec<T>>) {
+        if let Some(relation) = self.relations.get_mut(relation_name) {
+            relation.insert_all(facts);
+        } else {
+            let mut relation = Relation::new(relation_name.to_string());
+            relation.insert_all(facts);
+            self.relations.insert(relation_name.to_string(), relation);
+        }
+    }
+
+    pub fn ground_all(&mut self) {
+        for relation in self.relations.values_mut() {
+            relation.ground();
+        }
+    }
+
+    pub fn size_of_relation(&self, relation_name: &str) -> usize {
+        self.relations
+            .get(relation_name)
+            .map(|r| r.len())
+            .unwrap_or(0)
     }
 
     /// Evaluate all rules until fixpoint is reached
@@ -208,32 +256,29 @@ where
     }
 
     fn apply_rule(&mut self, rule: &Rule<T>) -> bool {
-        let mut new_facts = Vec::new();
+        let mut new_facts = HashMap::new();
         let substitutions = self.find_substitutions(&rule.body);
 
         for substitution in substitutions {
             for head in &rule.heads {
                 if let Some(new_fact) = self.apply_substitution(head, &substitution) {
-                    new_facts.push((head.0.clone(), new_fact));
+                    new_facts
+                        .entry(head.0.clone())
+                        .or_insert(Vec::new())
+                        .push(new_fact);
                 }
             }
         }
 
         let mut changed = false;
-        for (relation_name, fact) in new_facts {
-            let old_size = self
-                .relations
-                .get(&relation_name)
-                .map(|r| r.len())
-                .unwrap_or(0);
+        for (relation_name, facts) in new_facts {
+            self.ground_relation(&relation_name);
 
-            self.insert_fact(&relation_name, fact);
+            let old_size = self.size_of_relation(&relation_name);
 
-            let new_size = self
-                .relations
-                .get(&relation_name)
-                .map(|r| r.len())
-                .unwrap_or(0);
+            self.insert_facts(&relation_name, facts);
+
+            let new_size = self.size_of_relation(&relation_name);
             if new_size > old_size {
                 changed = true;
             }
@@ -247,25 +292,82 @@ where
             return vec![Substitution::new()];
         }
 
-        let mut results = vec![Substitution::new()];
+        let mut all_results = Vec::new();
 
-        for (relation_name, goal_tuple) in goals {
-            let mut new_results = Vec::new();
+        // Semi-naive evaluation:
+        // For each goal position, try using only delta tuples for that position
+        // and stable tuples for all other positions
+        // This ensures that at least one goal is evaluated using only delta tuples
 
-            if let Some(relation) = self.relations.get(relation_name) {
-                for substitution in &results {
-                    for tuple in relation.iter() {
-                        if let Some(new_sub) = self.unify_tuple(goal_tuple, tuple, substitution) {
-                            new_results.push(new_sub);
+        // Given three relations: (X, 𝜟X), (Y, 𝜟Y), (Z, 𝜟Z)
+        // We want the following combinations:
+        // 1. 𝜟X, 𝜟Y, 𝜟Z
+        // 2. 𝜟X, 𝜟Y, Z
+        // 3. 𝜟X, Y, 𝜟Z
+        // 4. X, 𝜟Y, 𝜟Z
+        // 5. X, Y, 𝜟Z
+        // 6. X, 𝜟Y, Z
+        // 7. 𝜟X, Y, Z
+        //
+        // Count: 2^n - 1 a.k.a. 2^3 - 1 = 7
+        //
+        // Note that we DO NOT WANT: X, Y, Z
+        //
+        // This can be rewritten as:
+        // 1. 𝜟X, 𝜟Y + Y, 𝜟Z + Z
+        // 2. X, 𝜟Y, 𝜟Z + Z
+        // 3. X, Y, 𝜟Z
+        // Count: n a.k.a. 3
+        //
+        // This last one reduces the number of iteration of the outer loop which is good when there are many goals and
+        // is the one we want to use.
+
+        for delta_goal_idx in 0..goals.len() {
+            let mut results = vec![Substitution::new()];
+
+            for (goal_idx, (relation_name, goal_tuple)) in goals.iter().enumerate() {
+                let mut new_results = Vec::new();
+
+                if let Some(relation) = self.relations.get(relation_name) {
+                    for substitution in &results {
+                        if goal_idx == delta_goal_idx {
+                            // Use only delta tuples
+                            for tuple in relation.delta_iter() {
+                                if let Some(new_sub) =
+                                    self.unify_tuple(goal_tuple, tuple, substitution)
+                                {
+                                    new_results.push(new_sub);
+                                }
+                            }
+                        } else if goal_idx < delta_goal_idx {
+                            // Use only stable tuples (not delta)
+                            for tuple in relation.stable_iter() {
+                                if let Some(new_sub) =
+                                    self.unify_tuple(goal_tuple, tuple, substitution)
+                                {
+                                    new_results.push(new_sub);
+                                }
+                            }
+                        } else {
+                            // Use both stable and delta tuples
+                            for tuple in relation.iter() {
+                                if let Some(new_sub) =
+                                    self.unify_tuple(goal_tuple, tuple, substitution)
+                                {
+                                    new_results.push(new_sub);
+                                }
+                            }
                         }
                     }
                 }
+
+                results = new_results;
             }
 
-            results = new_results;
+            all_results.extend(results);
         }
 
-        results
+        all_results
     }
 
     fn unify_tuple(
