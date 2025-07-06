@@ -124,16 +124,22 @@ where
     }
 }
 
-/// A Datalog rule: head :- body
+/// A Datalog rule: heads :- body
 #[derive(Debug, Clone)]
 pub struct Rule<T> {
-    pub head: (String, Tuple<T>),
+    pub heads: Vec<(String, Tuple<T>)>,
     pub body: Vec<(String, Tuple<T>)>,
 }
 
 impl<T: fmt::Display> fmt::Display for Rule<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}({}) :- ", self.head.0, self.head.1)?;
+        for (i, (rel, tuple)) in self.heads.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}({})", rel, tuple)?;
+        }
+        write!(f, " :- ")?;
         for (i, (rel, tuple)) in self.body.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -206,25 +212,26 @@ where
         let substitutions = self.find_substitutions(&rule.body);
 
         for substitution in substitutions {
-            if let Some(new_fact) = self.apply_substitution(&rule.head, &substitution) {
-                new_facts.push(new_fact);
+            for head in &rule.heads {
+                if let Some(new_fact) = self.apply_substitution(head, &substitution) {
+                    new_facts.push((head.0.clone(), new_fact));
+                }
             }
         }
 
         let mut changed = false;
-        for fact in new_facts {
-            let relation_name = &rule.head.0;
+        for (relation_name, fact) in new_facts {
             let old_size = self
                 .relations
-                .get(relation_name)
+                .get(&relation_name)
                 .map(|r| r.len())
                 .unwrap_or(0);
 
-            self.insert_fact(relation_name, fact);
+            self.insert_fact(&relation_name, fact);
 
             let new_size = self
                 .relations
-                .get(relation_name)
+                .get(&relation_name)
                 .map(|r| r.len())
                 .unwrap_or(0);
             if new_size > old_size {
@@ -343,9 +350,9 @@ macro_rules! tuple {
 
 #[macro_export]
 macro_rules! rule {
-    ($head_rel:expr, $head_tuple:expr => $($body_rel:expr, $body_tuple:expr),*) => {
+    ($($head_rel:expr, $head_tuple:expr),+ => $($body_rel:expr, $body_tuple:expr),*) => {
         Rule {
-            head: ($head_rel.to_string(), $head_tuple),
+            heads: vec![$(($head_rel.to_string(), $head_tuple)),+],
             body: vec![$(($body_rel.to_string(), $body_tuple)),*],
         }
     };
@@ -411,5 +418,32 @@ mod tests {
         let path_relation = db.get_relation("path").unwrap();
         assert!(path_relation.contains(&vec![1, 3]));
         assert!(path_relation.contains(&vec![2, 4]));
+    }
+
+    #[test]
+    fn test_multiple_heads() {
+        let mut db = Database::new();
+
+        db.insert_fact("person", vec!["alice"]);
+        db.insert_fact("person", vec!["bob"]);
+
+        // Rule with multiple heads:
+        // human(X), mortal(X) :- person(X)
+        let multi_head_rule = rule!(
+            "human", tuple![var!("X")],
+            "mortal", tuple![var!("X")] =>
+            "person", tuple![var!("X")]
+        );
+
+        db.add_rule(multi_head_rule);
+        db.evaluate();
+
+        let human_relation = db.get_relation("human").unwrap();
+        let mortal_relation = db.get_relation("mortal").unwrap();
+
+        assert!(human_relation.contains(&vec!["alice"]));
+        assert!(human_relation.contains(&vec!["bob"]));
+        assert!(mortal_relation.contains(&vec!["alice"]));
+        assert!(mortal_relation.contains(&vec!["bob"]));
     }
 }
