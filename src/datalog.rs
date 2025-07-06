@@ -110,11 +110,15 @@ where
     }
 
     pub fn insert(&mut self, tuple: Vec<T>) {
-        self.delta.insert(tuple);
+        if !self.stable.contains(&tuple) {
+            self.delta.insert(tuple);
+        }
     }
 
     pub fn insert_all(&mut self, tuples: Vec<Vec<T>>) {
-        self.delta.extend(tuples);
+        for tuple in tuples {
+            self.insert(tuple);
+        }
     }
 
     pub fn contains(&self, tuple: &[T]) -> bool {
@@ -138,8 +142,7 @@ where
     }
 
     pub fn ground(&mut self) {
-        self.stable.extend(self.delta.iter().cloned());
-        self.delta.clear();
+        self.stable.extend(self.delta.drain());
     }
 }
 
