@@ -368,15 +368,23 @@ where
         // This last one reduces the number of iteration of the outer loop which is good when there are many goals and
         // is the one we want to use.
 
-        for delta_goal_idx in 0..goals.len() {
-            let mut results = vec![Substitution::new()];
+        // We use the starting point to avoid re-evaluating the same goal multiple times.
+        let mut starting_point = Some(vec![Substitution::new()]);
 
-            for (goal_idx, (relation_name, goal_tuple)) in goals.iter().enumerate() {
+        for delta_goal_idx in 0..goals.len() {
+            // Use take() to avoid cloning the starting point
+            let mut results = starting_point.take().unwrap_or(vec![Substitution::new()]);
+
+            // saturating sub is used to avoid going out of bounds a.k.a. 0 - 1 = 0 instead of panicking
+            let start_index = delta_goal_idx.saturating_sub(1);
+            for goal_idx in start_index..goals.len() {
+                let (relation_name, goal_tuple) = &goals[goal_idx];
                 let mut new_results = Vec::new();
 
                 if let Some(relation) = self.relations.get(relation_name) {
                     for substitution in &results {
                         if goal_idx == delta_goal_idx {
+                            starting_point = Some(results.clone());
                             // Use only delta tuples
                             for tuple in relation.delta_iter() {
                                 if let Some(new_sub) =
