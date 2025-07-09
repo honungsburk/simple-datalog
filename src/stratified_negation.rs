@@ -10,6 +10,23 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
+#[derive(Debug, Clone)]
+pub enum DatalogError {
+    CircularDependency,
+    NonStratifiableProgram,
+}
+
+impl fmt::Display for DatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DatalogError::CircularDependency => write!(f, "Circular dependency detected"),
+            DatalogError::NonStratifiableProgram => write!(f, "Program is not stratifiable"),
+        }
+    }
+}
+
+impl std::error::Error for DatalogError {}
+
 /// A term in a Datalog program - either a value or a variable
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term<T> {
@@ -118,30 +135,16 @@ impl<T> Stratification<T> {
         }
     }
 
-    pub fn add_stratum(&mut self, rules: Vec<Rule<T>>) -> StratumID {
-        let id = self.strata.len() as StratumID;
-        self.strata.push(Stratum { id, rules });
-        id
+    pub fn from_rules(rules: Vec<Rule<T>>) -> Result<Self, DatalogError> {
+        let mut stratification = Self::new();
+
+        // TODO: Implement stratification
+        todo!();
+        Ok(stratification)
     }
 
-    pub fn add_dependency(&mut self, from: StratumID, to: StratumID) {
-        self.dependency_graph
-            .entry(from)
-            .or_insert_with(Vec::new)
-            .push(to);
-    }
-
-    pub fn get_dependencies(&self, stratum_id: StratumID) -> &[StratumID] {
-        self.dependency_graph
-            .get(&stratum_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-
-    pub fn is_ready(&self, stratum_id: StratumID, completed: &HashSet<StratumID>) -> bool {
-        self.get_dependencies(stratum_id)
-            .iter()
-            .all(|dep_id| completed.contains(dep_id))
+    pub fn iter(&self) -> impl Iterator<Item = &Stratum<T>> {
+        self.strata.iter()
     }
 }
 
@@ -240,6 +243,31 @@ impl<T> Rule<T> {
     pub fn new() -> RuleBuilder<T> {
         RuleBuilder::new()
     }
+
+    /// Get all relations that this rule depends on (reads from)
+    /// The boolean indicates whether the dependency is positive or negative
+    /// true means negative, false means positive
+    pub fn dependencies(&self) -> HashMap<String, bool> {
+        let mut deps = HashMap::new();
+        for (relation_name, tuple) in &self.body {
+            deps.insert(relation_name.clone(), tuple.is_negated);
+        }
+        deps
+    }
+
+    /// Get all relations that this rule produces (writes to)
+    pub fn produces(&self) -> HashSet<String> {
+        let mut prods = HashSet::new();
+        for (relation_name, _) in &self.heads {
+            prods.insert(relation_name.clone());
+        }
+        prods
+    }
+
+    /// Check if this rule has any negative dependencies
+    pub fn has_negation(&self) -> bool {
+        self.body.iter().any(|(_, tuple)| tuple.is_negated)
+    }
 }
 
 impl<T: fmt::Display> fmt::Display for Rule<T> {
@@ -282,6 +310,13 @@ impl<T> RuleBuilder<T> {
 
     pub fn body<S: Into<String>>(mut self, relation: S, tuple: Tuple<T>) -> Self {
         self.body.push((relation.into(), tuple));
+        self
+    }
+
+    pub fn body_negative<S: Into<String>>(mut self, relation: S, tuple: Tuple<T>) -> Self {
+        let mut negated_tuple = tuple;
+        negated_tuple.is_negated = true;
+        self.body.push((relation.into(), negated_tuple));
         self
     }
 
@@ -366,17 +401,34 @@ where
             .unwrap_or(0)
     }
 
-    /// Evaluate all rules until fixpoint is reached
-    pub fn evaluate(&mut self) {
+    /// Evaluate a single stratum
+    fn evaluate_stratum(&mut self, rules: &[Rule<T>]) {
         let mut changed = true;
         while changed {
             changed = false;
-            for rule in self.rules.clone() {
-                if self.apply_rule(&rule) {
+            for rule in rules {
+                if self.apply_rule(rule) {
                     changed = true;
                 }
             }
         }
+    }
+
+    /// Evaluate all rules using stratified evaluation
+    pub fn evaluate(&mut self) -> Result<(), DatalogError> {
+        if self.rules.is_empty() {
+            return Ok(());
+        }
+
+        // Compute stratification
+        let stratification = Stratification::from_rules(self.rules.clone())?;
+
+        // Evaluate each stratum in order
+        for stratum in stratification.iter() {
+            self.evaluate_stratum(&stratum.rules);
+        }
+
+        Ok(())
     }
 
     fn apply_rule(&mut self, rule: &Rule<T>) -> bool {
@@ -512,6 +564,10 @@ where
             return None;
         }
 
+        if pattern.is_negated {
+            return self.unify_tuple_with_negation(pattern, tuple, substitution);
+        }
+
         let mut new_substitution = substitution.clone();
 
         for (pattern_term, value) in pattern.iter().zip(tuple.iter()) {
@@ -534,6 +590,41 @@ where
         }
 
         Some(new_substitution)
+    }
+
+    fn unify_tuple_with_negation(
+        &self,
+        pattern: &Tuple<T>,
+        tuple: &[T],
+        substitution: &Substitution<T>,
+    ) -> Option<Substitution<T>> {
+        let mut new_substitution = substitution.clone();
+        let mut does_match = true;
+
+        for (pattern_term, value) in pattern.iter().zip(tuple.iter()) {
+            match pattern_term {
+                Term::Value(pattern_value) => {
+                    if pattern_value != value {
+                        does_match = false;
+                    }
+                }
+                Term::Variable(var_name) => {
+                    if let Some(existing_value) = new_substitution.get(var_name) {
+                        if existing_value != value {
+                            does_match = false;
+                        }
+                    } else {
+                        new_substitution.insert(var_name.clone(), value.clone());
+                    }
+                }
+            }
+        }
+
+        if does_match {
+            None
+        } else {
+            Some(new_substitution)
+        }
     }
 
     fn apply_substitution(
@@ -593,7 +684,7 @@ mod tests {
             .build();
 
         db.add_rule(grandparent_rule);
-        db.evaluate();
+        db.evaluate().unwrap();
 
         let grandparent_relation = db.get_relation("grandparent").unwrap();
         assert!(grandparent_relation.contains(&vec!["alice", "charlie"]));
@@ -615,7 +706,7 @@ mod tests {
             .build();
 
         db.add_rule(path_rule);
-        db.evaluate();
+        db.evaluate().unwrap();
 
         let path_relation = db.get_relation("path").unwrap();
         assert!(path_relation.contains(&vec![1, 3]));
@@ -638,7 +729,7 @@ mod tests {
             .build();
 
         db.add_rule(multi_head_rule);
-        db.evaluate();
+        db.evaluate().unwrap();
 
         let human_relation = db.get_relation("human").unwrap();
         let mortal_relation = db.get_relation("mortal").unwrap();
@@ -647,6 +738,33 @@ mod tests {
         assert!(human_relation.contains(&vec!["bob"]));
         assert!(mortal_relation.contains(&vec!["alice"]));
         assert!(mortal_relation.contains(&vec!["bob"]));
+    }
+
+    #[test]
+    fn test_negation() {
+        let mut db = Database::new();
+
+        // Facts
+        db.insert_fact("parent", vec!["alice", "bob"]);
+        db.insert_fact("parent", vec!["bob", "charlie"]);
+        db.insert_fact("married", vec!["alice"]);
+
+        // Rule: single_parent(X) :- parent(X, Y), not married(X)
+        let single_parent_rule = Rule::new()
+            .head("single_parent", Tuple::from_variables(vec!["X"]))
+            .body("parent", Tuple::from_variables(vec!["X", "Y"]))
+            .body_negative("married", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        db.add_rule(single_parent_rule);
+        db.evaluate().unwrap();
+
+        let single_parent_relation = db.get_relation("single_parent").unwrap();
+
+        // bob should be a single parent (has child but not married)
+        assert!(single_parent_relation.contains(&vec!["bob"]));
+        // alice should not be a single parent (is married)
+        assert!(!single_parent_relation.contains(&vec!["alice"]));
     }
 
     #[test]
@@ -698,7 +816,7 @@ mod tests {
             .build();
 
         db.add_rule(adult_rule);
-        db.evaluate();
+        db.evaluate().unwrap();
 
         let person_relation = db.get_relation("person").unwrap();
         let adult_relation = db.get_relation("adult").unwrap();
@@ -775,7 +893,7 @@ mod tests {
 
         db.add_rule(path_rule1);
         db.add_rule(path_rule2);
-        db.evaluate();
+        db.evaluate().unwrap();
 
         let path_relation = db.get_relation("path").unwrap();
 
@@ -807,7 +925,7 @@ mod tests {
             .build();
 
         db.add_rule(rule);
-        db.evaluate();
+        db.evaluate().unwrap();
 
         let grandparent_relation = db.get_relation("grandparent").unwrap();
         assert!(grandparent_relation.contains(&vec!["alice", "charlie"]));
