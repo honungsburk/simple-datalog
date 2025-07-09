@@ -98,6 +98,53 @@ impl<T: fmt::Display> fmt::Display for Tuple<T> {
     }
 }
 
+type StratumID = u32;
+
+pub struct Stratum<T> {
+    pub id: StratumID,
+    pub rules: Vec<Rule<T>>,
+}
+
+pub struct Stratification<T> {
+    pub strata: Vec<Stratum<T>>,
+    pub dependency_graph: HashMap<StratumID, Vec<StratumID>>,
+}
+
+impl<T> Stratification<T> {
+    pub fn new() -> Self {
+        Self {
+            strata: Vec::new(),
+            dependency_graph: HashMap::new(),
+        }
+    }
+
+    pub fn add_stratum(&mut self, rules: Vec<Rule<T>>) -> StratumID {
+        let id = self.strata.len() as StratumID;
+        self.strata.push(Stratum { id, rules });
+        id
+    }
+
+    pub fn add_dependency(&mut self, from: StratumID, to: StratumID) {
+        self.dependency_graph
+            .entry(from)
+            .or_insert_with(Vec::new)
+            .push(to);
+    }
+
+    pub fn get_dependencies(&self, stratum_id: StratumID) -> &[StratumID] {
+        self.dependency_graph
+            .get(&stratum_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn is_ready(&self, stratum_id: StratumID, completed: &HashSet<StratumID>) -> bool {
+        self.get_dependencies(stratum_id)
+            .iter()
+            .all(|dep_id| completed.contains(dep_id))
+    }
+}
+
 /// A substitution mapping variable names to values
 #[derive(Debug, Clone)]
 pub struct Substitution<T>(HashMap<String, T>);
