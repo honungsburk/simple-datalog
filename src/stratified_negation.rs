@@ -12,14 +12,16 @@ use std::hash::Hash;
 
 #[derive(Debug, Clone)]
 pub enum DatalogError {
-    CircularDependency,
+    CyclicNegation { rules: HashSet<usize> },
     NonStratifiableProgram,
 }
 
 impl fmt::Display for DatalogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DatalogError::CircularDependency => write!(f, "Circular dependency detected"),
+            DatalogError::CyclicNegation { rules } => {
+                write!(f, "Cyclic negation detected: {:?}", rules)
+            }
             DatalogError::NonStratifiableProgram => write!(f, "Program is not stratifiable"),
         }
     }
@@ -178,7 +180,7 @@ impl Stratifier {
                 continue;
             }
             let mut current_visited = HashSet::new();
-            self.find_strata(rule, &mut current_visited, &rule_deps)?;
+            self.find_strata(rule, &mut current_visited, false, &rule_deps)?;
             for rule in current_visited {
                 self.visited[rule] = true;
             }
@@ -229,9 +231,16 @@ impl Stratifier {
         &mut self,
         rule: usize,
         current_visited: &mut HashSet<usize>,
+        is_negated: bool,
         rule_deps: &HashMap<usize, Vec<(usize, bool)>>,
     ) -> Result<(), DatalogError> {
         if current_visited.contains(&rule) {
+            if is_negated {
+                return Err(DatalogError::CyclicNegation {
+                    rules: current_visited.clone(),
+                });
+            }
+
             // We have found a cycle, store the path on the stack
             let mut stratum = 0;
             // Find if any of the rules in the path have a stratum assignment
@@ -268,9 +277,14 @@ impl Stratifier {
         current_visited.insert(rule);
 
         // Recursively find strata for all dependencies
-        for (dep_rule, _) in rule_deps.get(&rule).unwrap_or(&Vec::new()) {
+        for (dep_rule, rule_is_negated) in rule_deps.get(&rule).unwrap_or(&Vec::new()) {
             if !self.visited[*dep_rule] {
-                self.find_strata(*dep_rule, current_visited, rule_deps)?;
+                self.find_strata(
+                    *dep_rule,
+                    current_visited,
+                    is_negated || *rule_is_negated,
+                    rule_deps,
+                )?;
             }
         }
 
@@ -312,8 +326,40 @@ where
         stratifier.run(rules)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Stratum<T>> {
-        self.strata.values()
+    pub fn iter(&self) -> Vec<&Stratum<T>> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+
+        for stratum_id in self.strata.keys() {
+            if !visited.contains(stratum_id) {
+                self.topological_sort_visit(*stratum_id, &mut visited, &mut result);
+            }
+        }
+
+        result
+    }
+
+    fn topological_sort_visit<'a>(
+        &'a self,
+        stratum_id: StratumID,
+        visited: &mut HashSet<StratumID>,
+        result: &mut Vec<&'a Stratum<T>>,
+    ) {
+        if visited.contains(&stratum_id) {
+            return;
+        }
+
+        visited.insert(stratum_id);
+
+        if let Some(dependencies) = self.dependency_graph.get(&stratum_id) {
+            for &dep_id in dependencies {
+                self.topological_sort_visit(dep_id, visited, result);
+            }
+        }
+
+        if let Some(stratum) = self.strata.get(&stratum_id) {
+            result.push(stratum);
+        }
     }
 }
 
