@@ -115,7 +115,176 @@ impl<T: fmt::Display> fmt::Display for Tuple<T> {
     }
 }
 
-type StratumID = u32;
+struct Stratifier {
+    visited: Vec<bool>,
+    strata_assignments: Vec<usize>,
+    strata_counter: usize,
+    path: Vec<usize>,
+}
+
+impl Stratifier {
+    pub fn new(length: usize) -> Self {
+        Self {
+            visited: vec![false; length],
+            strata_assignments: vec![0; length],
+            strata_counter: 0,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn run<T: Clone + Eq + Hash + Ord>(
+        &mut self,
+        rules: Vec<Rule<T>>,
+    ) -> Result<Stratification<T>, DatalogError> {
+        if rules.is_empty() {
+            return Ok(Stratification::new());
+        }
+
+        // Build rule-to-rule dependency graph
+        let mut rule_deps: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+        let mut relation_to_rules: HashMap<String, Vec<usize>> = HashMap::new();
+
+        // Initialize dependency graph
+        for (i, rule) in rules.iter().enumerate() {
+            rule_deps.insert(i, Vec::new());
+
+            // Track which rules produce each relation
+            for relation_name in rule.produces() {
+                relation_to_rules
+                    .entry(relation_name)
+                    .or_insert_with(Vec::new)
+                    .push(i);
+            }
+        }
+
+        // Build dependencies between rules
+        for (i, rule) in rules.iter().enumerate() {
+            for (relation_name, is_negated) in rule.dependencies() {
+                if let Some(producer_rules) = relation_to_rules.get(&relation_name) {
+                    for &producer_rule in producer_rules {
+                        if producer_rule != i {
+                            rule_deps
+                                .get_mut(&i)
+                                .unwrap()
+                                .push((producer_rule, is_negated));
+                        }
+                    }
+                }
+            }
+        }
+
+        for rule in 0..rules.len() {
+            if self.visited[rule] {
+                continue;
+            }
+            let mut current_visited = HashSet::new();
+            self.find_strata(rule, &mut current_visited, &rule_deps)?;
+            for rule in current_visited {
+                self.visited[rule] = true;
+            }
+        }
+
+        let mut stratification = Stratification::new();
+        for (i, stratum) in self.strata_assignments.iter().enumerate() {
+            stratification
+                .strata
+                .entry(*stratum)
+                .or_insert_with(|| Stratum {
+                    id: *stratum,
+                    rules: Vec::new(),
+                })
+                .rules
+                .push(rules[i].clone());
+        }
+
+        // Build dependency graph
+        let mut dependency_graph = HashMap::new();
+        for stratum in stratification.strata.values() {
+            let mut deps = HashSet::new();
+            let mut relations = HashSet::new();
+            for rule in stratum.rules.iter() {
+                for (relation_name, _) in rule.dependencies() {
+                    relations.insert(relation_name);
+                }
+            }
+            for relation in relations {
+                if let Some(producers) = relation_to_rules.get(&relation) {
+                    for &producer in producers {
+                        let strata = self.strata_assignments[producer];
+                        deps.insert(strata);
+                    }
+                }
+            }
+            dependency_graph.insert(stratum.id, deps);
+        }
+
+        stratification.dependency_graph = dependency_graph;
+
+        Ok(stratification)
+    }
+
+    /// Find all rules that are parts of cycles and group them into stratas. If
+    /// a rule is not part of a cycle, it is alone in its stratum.
+    fn find_strata(
+        &mut self,
+        rule: usize,
+        current_visited: &mut HashSet<usize>,
+        rule_deps: &HashMap<usize, Vec<(usize, bool)>>,
+    ) -> Result<(), DatalogError> {
+        if current_visited.contains(&rule) {
+            // We have found a cycle, store the path on the stack
+            let mut stratum = 0;
+            // Find if any of the rules in the path have a stratum assignment
+            // which means that it is a part of a cycle. If so, we need to assign
+            // the same stratum to all the rules that is a part of the cycle we just found, effectively
+            // joining the cycle into one stratum.
+            for dep_rule in self.path.iter() {
+                if rule == *dep_rule {
+                    self.strata_counter += 1;
+                    stratum = self.strata_counter;
+                    break;
+                }
+                if self.strata_assignments[*dep_rule] != 0 {
+                    stratum = self.strata_assignments[*dep_rule];
+                    break;
+                }
+            }
+
+            // Assign the stratum to all the rules that is a part of the cycle we just found, effectively
+            // joining the cycle into one stratum.
+            for dep_rule in self.path.iter() {
+                if rule == *dep_rule {
+                    break;
+                }
+                self.strata_assignments[*dep_rule] = stratum;
+            }
+
+            // Assign the stratum to the rule itself.
+            self.strata_assignments[rule] = stratum;
+
+            return Ok(());
+        }
+        self.path.push(rule);
+        current_visited.insert(rule);
+
+        // Recursively find strata for all dependencies
+        for (dep_rule, _) in rule_deps.get(&rule).unwrap_or(&Vec::new()) {
+            if !self.visited[*dep_rule] {
+                self.find_strata(*dep_rule, current_visited, rule_deps)?;
+            }
+        }
+
+        // If the rule has no stratum assignment, assign it a new stratum
+        if self.strata_assignments[rule] == 0 {
+            self.strata_counter += 1;
+            self.strata_assignments[rule] = self.strata_counter;
+        }
+
+        self.path.pop();
+        Ok(())
+    }
+}
+type StratumID = usize;
 
 pub struct Stratum<T> {
     pub id: StratumID,
@@ -123,28 +292,28 @@ pub struct Stratum<T> {
 }
 
 pub struct Stratification<T> {
-    pub strata: Vec<Stratum<T>>,
-    pub dependency_graph: HashMap<StratumID, Vec<StratumID>>,
+    pub strata: HashMap<StratumID, Stratum<T>>,
+    pub dependency_graph: HashMap<StratumID, HashSet<StratumID>>,
 }
 
-impl<T> Stratification<T> {
+impl<T> Stratification<T>
+where
+    T: Clone + Eq + Hash + Ord,
+{
     pub fn new() -> Self {
         Self {
-            strata: Vec::new(),
+            strata: HashMap::new(),
             dependency_graph: HashMap::new(),
         }
     }
 
     pub fn from_rules(rules: Vec<Rule<T>>) -> Result<Self, DatalogError> {
-        let mut stratification = Self::new();
-
-        // TODO: Implement stratification
-        todo!();
-        Ok(stratification)
+        let mut stratifier = Stratifier::new(rules.len());
+        stratifier.run(rules)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Stratum<T>> {
-        self.strata.iter()
+        self.strata.values()
     }
 }
 
@@ -963,5 +1132,63 @@ mod tests {
         assert!(matches!(var_tuple.terms[0], Term::Variable(ref v) if v == "X"));
         assert!(matches!(var_tuple.terms[1], Term::Variable(ref v) if v == "Y"));
         assert!(matches!(var_tuple.terms[2], Term::Variable(ref v) if v == "Z"));
+    }
+
+    #[test]
+    fn test_stratification() {
+        let mut db = Database::new();
+
+        // Facts
+        db.insert_fact("parent", vec!["alice", "bob"]);
+        db.insert_fact("parent", vec!["bob", "charlie"]);
+        db.insert_fact("married", vec!["alice"]);
+
+        // Rules with negation that require stratification:
+        // 1. single_parent(X) :- parent(X, Y), not married(X)  (stratum 1)
+        // 2. grandparent(X, Z) :- parent(X, Y), parent(Y, Z)  (stratum 0)
+        // 3. not_single_grandparent(X, Z) :- grandparent(X, Z), not single_parent(X)  (stratum 2)
+
+        let grandparent_rule = Rule::new()
+            .head("grandparent", Tuple::from_variables(vec!["X", "Z"]))
+            .body("parent", Tuple::from_variables(vec!["X", "Y"]))
+            .body("parent", Tuple::from_variables(vec!["Y", "Z"]))
+            .build();
+
+        let single_parent_rule = Rule::new()
+            .head("single_parent", Tuple::from_variables(vec!["X"]))
+            .body("parent", Tuple::from_variables(vec!["X", "Y"]))
+            .body_negative("married", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        let not_single_grandparent_rule = Rule::new()
+            .head(
+                "not_single_grandparent",
+                Tuple::from_variables(vec!["X", "Z"]),
+            )
+            .body("grandparent", Tuple::from_variables(vec!["X", "Z"]))
+            .body_negative("single_parent", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        db.add_rule(grandparent_rule);
+        db.add_rule(single_parent_rule);
+        db.add_rule(not_single_grandparent_rule);
+        db.evaluate().unwrap();
+
+        let grandparent_relation = db.get_relation("grandparent").unwrap();
+        let single_parent_relation = db.get_relation("single_parent").unwrap();
+        let not_single_grandparent_relation = db.get_relation("not_single_grandparent").unwrap();
+
+        // Verify grandparent facts (stratum 0)
+        assert!(grandparent_relation.contains(&vec!["alice", "charlie"]));
+
+        // Verify single_parent facts (stratum 1)
+        assert!(single_parent_relation.contains(&vec!["bob"])); // bob has child but not married
+        assert!(!single_parent_relation.contains(&vec!["alice"])); // alice is married
+
+        // Verify not_single_grandparent facts (stratum 2)
+        // alice is a grandparent but not a single parent (she's married)
+        assert!(not_single_grandparent_relation.contains(&vec!["alice", "charlie"]));
+        // bob is a grandparent and a single parent, so should not be in this relation
+        assert!(!not_single_grandparent_relation.contains(&vec!["bob", "charlie"]));
     }
 }
