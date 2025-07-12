@@ -21,7 +21,7 @@ as an intermediate step I'm implementing a simple datalog engine here without al
     - [ ] Provenance-based Incremental Maintanence
     - [ ] Incremental Maintenance for Negation and Aggregates
 **Extensions:**
-- [ x ] Stratified Negation
+- [x] Stratified Negation
 - [ ] Stratified Aggregation
 - [ ] Functors?
 - [ ] Expressions
