@@ -753,6 +753,7 @@ where
                     starting_point = Some(results.clone());
                 }
                 if goal_tuple.is_negated {
+                    // Negative goal, so there can not be ANY matching tuple
                     if let Some(relation) = self.relations.get(relation_name) {
                         let mut new_results = Vec::new();
 
@@ -797,6 +798,7 @@ where
                         results = new_results;
                     }
                 } else {
+                    // Positive goal, so we can use any existing substitution that matches the pattern
                     let mut new_results = Vec::new();
                     if let Some(relation) = self.relations.get(relation_name) {
                         for substitution in results.iter() {
