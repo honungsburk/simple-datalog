@@ -12,18 +12,21 @@ as an intermediate step I'm implementing a simple datalog engine here without al
     - [x] semi-naive
         - I think we could do better because we backtrack to much
     - [ ] leapfrog trie-join
+    - [ ] Magic Set
 - top-down
     - [ ] Query Sub-Query (QSQ)
-    - [ ] Magic Set
 - Incremental 
     - [ ] Counting Algorithm for Non-recursive Queries
     - [ ] Delete and Re-Derive Algorithm
     - [ ] Provenance-based Incremental Maintanence
     - [ ] Incremental Maintenance for Negation and Aggregates
 **Extensions:**
-- [ ] Stratified Negation
+- [ x ] Stratified Negation
 - [ ] Stratified Aggregation
-- [ ] Functors
+- [ ] Functors?
+- [ ] Expressions
+**Improvements**
+- [ ] Rewrite rules so that negation happens in the end automatically? If not then a rule that should produce tuples might not because a negative rule without bindings will eliminate all substitutions.
 
 ## Resources
 
