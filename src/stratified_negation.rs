@@ -617,7 +617,10 @@ where
     }
 
     /// Evaluate a single stratum
-    fn evaluate_stratum(&mut self, rules: &[Rule<T>]) {
+    fn evaluate_stratum(&mut self, rules: &[Rule<T>])
+    where
+        T: std::fmt::Debug,
+    {
         let mut changed = true;
         while changed {
             changed = false;
@@ -630,7 +633,10 @@ where
     }
 
     /// Evaluate all rules using stratified evaluation
-    pub fn evaluate(&mut self) -> Result<(), DatalogError> {
+    pub fn evaluate(&mut self) -> Result<(), DatalogError>
+    where
+        T: std::fmt::Debug,
+    {
         if self.rules.is_empty() {
             return Ok(());
         }
@@ -638,21 +644,36 @@ where
         // Compute stratification
         let stratification = Stratification::from_rules(self.rules.clone())?;
 
+        // Print stratification for debugging
+        println!("Stratification order:");
+        for stratum in stratification.iter() {
+            println!("  Stratum {}:", stratum.id);
+            for rule in &stratum.rules {
+                println!("    {:?}", rule);
+            }
+        }
+
         // Evaluate each stratum in order
         for stratum in stratification.iter() {
+            println!("Evaluating stratum {}", stratum.id);
             self.evaluate_stratum(&stratum.rules);
         }
 
         Ok(())
     }
 
-    fn apply_rule(&mut self, rule: &Rule<T>) -> bool {
+    fn apply_rule(&mut self, rule: &Rule<T>) -> bool
+    where
+        T: std::fmt::Debug,
+    {
+        println!("\nApplying rule: {:?}", rule);
         let mut new_facts = HashMap::new();
         let substitutions = self.find_substitutions(&rule.body);
 
         for substitution in substitutions {
             for head in &rule.heads {
                 if let Some(new_fact) = self.apply_substitution(head, &substitution) {
+                    println!("  Will insert into {}: {:?}", head.0, new_fact);
                     new_facts
                         .entry(head.0.clone())
                         .or_insert(Vec::new())
@@ -671,6 +692,10 @@ where
 
             let new_size = self.size_of_relation(&relation_name);
             if new_size > old_size {
+                println!(
+                    "  Relation '{}' changed: {} -> {}",
+                    relation_name, old_size, new_size
+                );
                 changed = true;
             }
         }
@@ -724,43 +749,89 @@ where
             let start_index = delta_goal_idx.saturating_sub(1);
             for goal_idx in start_index..goals.len() {
                 let (relation_name, goal_tuple) = &goals[goal_idx];
-                let mut new_results = Vec::new();
+                if goal_idx == delta_goal_idx {
+                    starting_point = Some(results.clone());
+                }
+                if goal_tuple.is_negated {
+                    if let Some(relation) = self.relations.get(relation_name) {
+                        let mut new_results = Vec::new();
 
-                if let Some(relation) = self.relations.get(relation_name) {
-                    for substitution in &results {
-                        if goal_idx == delta_goal_idx {
-                            starting_point = Some(results.clone());
-                            // Use only delta tuples
-                            for tuple in relation.delta_iter() {
-                                if let Some(new_sub) =
-                                    self.unify_tuple(goal_tuple, tuple, substitution)
-                                {
-                                    new_results.push(new_sub);
+                        for substitution in results.drain(..) {
+                            let mut add = true;
+                            if goal_idx == delta_goal_idx {
+                                // Use only delta tuples
+                                for tuple in relation.delta_iter() {
+                                    if let Some(_) =
+                                        self.unify_tuple(goal_tuple, tuple, &substitution)
+                                    {
+                                        add = false;
+                                        break;
+                                    }
+                                }
+                            } else if goal_idx < delta_goal_idx {
+                                // Use only stable tuples (not delta)
+                                for tuple in relation.stable_iter() {
+                                    if let Some(_) =
+                                        self.unify_tuple(goal_tuple, tuple, &substitution)
+                                    {
+                                        add = false;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                // Use both stable and delta tuples
+                                for tuple in relation.iter() {
+                                    if let Some(_) =
+                                        self.unify_tuple(goal_tuple, tuple, &substitution)
+                                    {
+                                        add = false;
+                                        break;
+                                    }
                                 }
                             }
-                        } else if goal_idx < delta_goal_idx {
-                            // Use only stable tuples (not delta)
-                            for tuple in relation.stable_iter() {
-                                if let Some(new_sub) =
-                                    self.unify_tuple(goal_tuple, tuple, substitution)
-                                {
-                                    new_results.push(new_sub);
-                                }
+
+                            if add {
+                                new_results.push(substitution.clone());
                             }
-                        } else {
-                            // Use both stable and delta tuples
-                            for tuple in relation.iter() {
-                                if let Some(new_sub) =
-                                    self.unify_tuple(goal_tuple, tuple, substitution)
-                                {
-                                    new_results.push(new_sub);
+                        }
+                        results = new_results;
+                    }
+                } else {
+                    let mut new_results = Vec::new();
+                    if let Some(relation) = self.relations.get(relation_name) {
+                        for substitution in results.iter() {
+                            if goal_idx == delta_goal_idx {
+                                // Use only delta tuples
+                                for tuple in relation.delta_iter() {
+                                    if let Some(new_sub) =
+                                        self.unify_tuple(goal_tuple, tuple, substitution)
+                                    {
+                                        new_results.push(new_sub);
+                                    }
+                                }
+                            } else if goal_idx < delta_goal_idx {
+                                // Use only stable tuples (not delta)
+                                for tuple in relation.stable_iter() {
+                                    if let Some(new_sub) =
+                                        self.unify_tuple(goal_tuple, tuple, substitution)
+                                    {
+                                        new_results.push(new_sub);
+                                    }
+                                }
+                            } else {
+                                // Use both stable and delta tuples
+                                for tuple in relation.iter() {
+                                    if let Some(new_sub) =
+                                        self.unify_tuple(goal_tuple, tuple, substitution)
+                                    {
+                                        new_results.push(new_sub);
+                                    }
                                 }
                             }
                         }
                     }
+                    results = new_results;
                 }
-
-                results = new_results;
             }
 
             all_results.extend(results);
@@ -777,10 +848,6 @@ where
     ) -> Option<Substitution<T>> {
         if pattern.len() != tuple.len() {
             return None;
-        }
-
-        if pattern.is_negated {
-            return self.unify_tuple_with_negation(pattern, tuple, substitution);
         }
 
         let mut new_substitution = substitution.clone();
@@ -805,41 +872,6 @@ where
         }
 
         Some(new_substitution)
-    }
-
-    fn unify_tuple_with_negation(
-        &self,
-        pattern: &Tuple<T>,
-        tuple: &[T],
-        substitution: &Substitution<T>,
-    ) -> Option<Substitution<T>> {
-        let mut new_substitution = substitution.clone();
-        let mut does_match = true;
-
-        for (pattern_term, value) in pattern.iter().zip(tuple.iter()) {
-            match pattern_term {
-                Term::Value(pattern_value) => {
-                    if pattern_value != value {
-                        does_match = false;
-                    }
-                }
-                Term::Variable(var_name) => {
-                    if let Some(existing_value) = new_substitution.get(var_name) {
-                        if existing_value != value {
-                            does_match = false;
-                        }
-                    } else {
-                        new_substitution.insert(var_name.clone(), value.clone());
-                    }
-                }
-            }
-        }
-
-        if does_match {
-            None
-        } else {
-            Some(new_substitution)
-        }
     }
 
     fn apply_substitution(
