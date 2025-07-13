@@ -183,9 +183,12 @@ struct Stratifier {
     path: Vec<PathElement>,
 }
 
+#[derive(Debug)]
 struct PathElement {
-    rule: usize,
-    is_aggregation: bool,
+    from_rule: usize,
+    to_rule: usize,
+    is_negated: bool,
+    // is_aggregated: bool,
 }
 
 impl Stratifier {
@@ -241,7 +244,7 @@ impl Stratifier {
                 continue;
             }
             let mut current_visited = HashSet::new();
-            self.find_strata(rule, &mut current_visited, false, &rule_deps)?;
+            self.find_strata(rule, &mut current_visited, &rule_deps)?;
             for rule in current_visited {
                 self.visited[rule] = true;
             }
@@ -292,41 +295,42 @@ impl Stratifier {
         &mut self,
         rule: usize,
         current_visited: &mut HashSet<usize>,
-        is_negated: bool,
         rule_deps: &HashMap<usize, Vec<(usize, bool)>>,
     ) -> Result<(), DatalogError> {
         if current_visited.contains(&rule) {
-            if is_negated {
-                return Err(DatalogError::CyclicNegation {
-                    rules: current_visited.clone(),
-                });
-            }
-
+            println!("Cycle detected: {:?}", self.path);
             // We have found a cycle, store the path on the stack
             let mut stratum = 0;
             // Find if any of the rules in the path have a stratum assignment
             // which means that it is a part of a cycle. If so, we need to assign
             // the same stratum to all the rules that is a part of the cycle we just found, effectively
             // joining the cycle into one stratum.
-            for dep_rule in self.path.iter() {
-                if rule == dep_rule.rule {
+            for path in self.path.iter().rev() {
+                if rule == path.from_rule {
                     self.strata_counter += 1;
                     stratum = self.strata_counter;
                     break;
                 }
-                if self.strata_assignments[dep_rule.rule] != 0 {
-                    stratum = self.strata_assignments[dep_rule.rule];
+                if self.strata_assignments[path.from_rule] != 0 {
+                    stratum = self.strata_assignments[path.from_rule];
                     break;
                 }
             }
 
             // Assign the stratum to all the rules that is a part of the cycle we just found, effectively
             // joining the cycle into one stratum.
-            for dep_rule in self.path.iter() {
-                if rule == dep_rule.rule {
+            for dep_rule in self.path.iter().rev() {
+                println!("dep_rule: {:?}", dep_rule);
+                if dep_rule.is_negated {
+                    println!("Cyclic negation detected: {:?}", dep_rule);
+                    return Err(DatalogError::CyclicNegation {
+                        rules: current_visited.clone(),
+                    });
+                }
+                self.strata_assignments[dep_rule.from_rule] = stratum;
+                if rule == dep_rule.from_rule {
                     break;
                 }
-                self.strata_assignments[dep_rule.rule] = stratum;
             }
 
             // Assign the stratum to the rule itself.
@@ -334,22 +338,20 @@ impl Stratifier {
 
             return Ok(());
         }
-        self.path.push(PathElement {
-            rule,
-            is_aggregation: false,
-        });
         current_visited.insert(rule);
 
         // Recursively find strata for all dependencies
         for (dep_rule, rule_is_negated) in rule_deps.get(&rule).unwrap_or(&Vec::new()) {
+            self.path.push(PathElement {
+                from_rule: rule,
+                to_rule: *dep_rule,
+                is_negated: *rule_is_negated,
+                // is_aggregated: false,
+            });
             if !self.visited[*dep_rule] {
-                self.find_strata(
-                    *dep_rule,
-                    current_visited,
-                    is_negated || *rule_is_negated,
-                    rule_deps,
-                )?;
+                self.find_strata(*dep_rule, current_visited, rule_deps)?;
             }
+            self.path.pop();
         }
 
         // If the rule has no stratum assignment, assign it a new stratum
@@ -358,12 +360,12 @@ impl Stratifier {
             self.strata_assignments[rule] = self.strata_counter;
         }
 
-        self.path.pop();
         Ok(())
     }
 }
 type StratumID = usize;
 
+#[derive(Debug)]
 pub struct Stratum {
     pub id: StratumID,
     pub rules: Vec<Rule>,
@@ -676,13 +678,27 @@ impl Database {
 
     /// Evaluate a single stratum
     fn evaluate_stratum(&mut self, rules: &[Rule]) {
-        let mut changed = true;
-        while changed {
-            changed = false;
+        let mut iteration = 0;
+        loop {
+            println!("Iteration: {:?}", iteration);
+            iteration += 1;
+            let mut new_facts = HashMap::new();
             for rule in rules {
-                if self.apply_rule(rule) {
+                self.apply_rule(rule, &mut new_facts);
+            }
+
+            let mut changed = false;
+            for (relation_name, facts) in new_facts {
+                self.ground_relation(&relation_name);
+                let old_size = self.size_of_relation(&relation_name);
+                self.insert_facts(&relation_name, facts);
+                let new_size = self.size_of_relation(&relation_name);
+                if new_size > old_size {
                     changed = true;
                 }
+            }
+            if !changed {
+                break;
             }
         }
     }
@@ -698,15 +714,17 @@ impl Database {
 
         // Evaluate each stratum in order
         for stratum in stratification.iter() {
+            println!("Evaluating stratum: {:?}", stratum);
             self.evaluate_stratum(&stratum.rules);
         }
 
         Ok(())
     }
 
-    fn apply_rule(&mut self, rule: &Rule) -> bool {
-        let mut new_facts = HashMap::new();
+    fn apply_rule(&mut self, rule: &Rule, new_facts: &mut HashMap<String, Vec<Vec<Value>>>) {
         let substitutions = self.find_substitutions(&rule.body);
+        println!("Rule: {:?}", rule);
+        println!("Substitutions: {:?}", substitutions);
 
         for substitution in substitutions {
             for head in &rule.heads {
@@ -718,22 +736,6 @@ impl Database {
                 }
             }
         }
-
-        let mut changed = false;
-        for (relation_name, facts) in new_facts {
-            self.ground_relation(&relation_name);
-
-            let old_size = self.size_of_relation(&relation_name);
-
-            self.insert_facts(&relation_name, facts);
-
-            let new_size = self.size_of_relation(&relation_name);
-            if new_size > old_size {
-                changed = true;
-            }
-        }
-
-        changed
     }
 
     fn find_substitutions(&self, goals: &[(String, Tuple)]) -> Vec<Substitution<Value>> {
@@ -1356,10 +1358,21 @@ mod tests {
             "b",
             vec![vec![Value::string("x")], vec![Value::string("y")]],
         );
-        db.insert_facts("d", vec![vec![Value::string("y")]]);
+        db.insert_facts(
+            "a",
+            vec![
+                vec![Value::string("x")],
+                vec![Value::string("v")],
+                vec![Value::string("w")],
+            ],
+        );
+        db.insert_facts(
+            "d",
+            vec![vec![Value::string("y")], vec![Value::string("v")]],
+        );
 
         // Rule 0: a(X) :- b(X)
-        let rule0 = Rule::new()
+        let rule2 = Rule::new()
             .head("a", Tuple::from_variables(vec!["X"]))
             .body("b", Tuple::from_variables(vec!["X"]))
             .build();
@@ -1371,16 +1384,16 @@ mod tests {
             .build();
 
         // Rule 2: c(X) :- not a(X), d(X)
-        let rule2 = Rule::new()
+        let rule0 = Rule::new()
             .head("c", Tuple::from_variables(vec!["X"]))
             .body_negative("a", Tuple::from_variables(vec!["X"]))
             .body("d", Tuple::from_variables(vec!["X"]))
             .build();
 
         // Add rules in an order that might trigger the bug
-        db.add_rule(rule2);
         db.add_rule(rule0);
         db.add_rule(rule1);
+        db.add_rule(rule2);
 
         // This should NOT fail with CyclicNegation error
         // The cycle a->b->a doesn't involve negation
@@ -1394,9 +1407,9 @@ mod tests {
         let c_relation = db.get_relation("c").unwrap();
         let d_relation = db.get_relation("d").unwrap();
 
-        assert_eq!(a_relation.len(), 2);
-        assert_eq!(b_relation.len(), 2);
-        assert_eq!(c_relation.len(), 1);
-        assert_eq!(d_relation.len(), 1);
+        assert_eq!(a_relation.len(), 4);
+        assert_eq!(b_relation.len(), 4);
+        assert_eq!(c_relation.len(), 2);
+        assert_eq!(d_relation.len(), 2);
     }
 }
