@@ -644,18 +644,8 @@ where
         // Compute stratification
         let stratification = Stratification::from_rules(self.rules.clone())?;
 
-        // Print stratification for debugging
-        println!("Stratification order:");
-        for stratum in stratification.iter() {
-            println!("  Stratum {}:", stratum.id);
-            for rule in &stratum.rules {
-                println!("    {:?}", rule);
-            }
-        }
-
         // Evaluate each stratum in order
         for stratum in stratification.iter() {
-            println!("Evaluating stratum {}", stratum.id);
             self.evaluate_stratum(&stratum.rules);
         }
 
@@ -666,14 +656,12 @@ where
     where
         T: std::fmt::Debug,
     {
-        println!("\nApplying rule: {:?}", rule);
         let mut new_facts = HashMap::new();
         let substitutions = self.find_substitutions(&rule.body);
 
         for substitution in substitutions {
             for head in &rule.heads {
                 if let Some(new_fact) = self.apply_substitution(head, &substitution) {
-                    println!("  Will insert into {}: {:?}", head.0, new_fact);
                     new_facts
                         .entry(head.0.clone())
                         .or_insert(Vec::new())
@@ -692,10 +680,6 @@ where
 
             let new_size = self.size_of_relation(&relation_name);
             if new_size > old_size {
-                println!(
-                    "  Relation '{}' changed: {} -> {}",
-                    relation_name, old_size, new_size
-                );
                 changed = true;
             }
         }
