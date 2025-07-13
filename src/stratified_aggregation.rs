@@ -17,6 +17,7 @@ pub enum DatalogError {
     CyclicNegation { rules: HashSet<usize> },
     CyclicAggregation { rules: HashSet<usize> },
     NonStratifiableProgram,
+    UnboundVariable { variable: String },
 }
 
 impl fmt::Display for DatalogError {
@@ -29,6 +30,9 @@ impl fmt::Display for DatalogError {
                 write!(f, "Cyclic aggregation detected: {:?}", rules)
             }
             DatalogError::NonStratifiableProgram => write!(f, "Program is not stratifiable"),
+            DatalogError::UnboundVariable { variable } => {
+                write!(f, "Unbound variable: {}", variable)
+            }
         }
     }
 }
@@ -40,7 +44,7 @@ impl std::error::Error for DatalogError {}
 pub enum Term {
     Value(Value),
     Variable(String),
-    Aggregation(AggregationOp, Vec<Term>),
+    Aggregation(AggregationOp, String),
 }
 
 impl Term {
@@ -68,22 +72,20 @@ impl Term {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AggregationOp {
     Count,
-    // Sum,
-    // Avg,
-    // Min,
-    // Max,
-    // Mean,
+    Sum,
+    Avg,
+    Min,
+    Max,
 }
 
 impl fmt::Display for AggregationOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AggregationOp::Count => write!(f, "count"),
-            // AggregationOp::Sum => write!(f, "sum"),
-            // AggregationOp::Avg => write!(f, "avg"),
-            // AggregationOp::Min => write!(f, "min"),
-            // AggregationOp::Max => write!(f, "max"),
-            // AggregationOp::Mean => write!(f, "mean"),
+            AggregationOp::Sum => write!(f, "sum"),
+            AggregationOp::Avg => write!(f, "avg"),
+            AggregationOp::Min => write!(f, "min"),
+            AggregationOp::Max => write!(f, "max"),
         }
     }
 }
@@ -103,16 +105,12 @@ impl fmt::Display for Term {
         match self {
             Term::Value(v) => write!(f, "{}", v),
             Term::Variable(v) => write!(f, "?{}", v),
-            Term::Aggregation(op, terms) => {
+            Term::Aggregation(op, var_name) => {
                 write!(f, "{}", op)?;
                 write!(f, "(")?;
-                for (i, term) in terms.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", term)?;
-                }
-                write!(f, ")")
+                write!(f, "?{}", var_name)?;
+                write!(f, ")")?;
+                Ok(())
             }
         }
     }
@@ -692,11 +690,11 @@ impl Database {
     }
 
     /// Evaluate a single stratum
-    fn evaluate_stratum(&mut self, rules: &[Rule]) {
+    fn evaluate_stratum(&mut self, rules: &[Rule]) -> Result<(), DatalogError> {
         loop {
             let mut new_facts = HashMap::new();
             for rule in rules {
-                self.apply_rule(rule, &mut new_facts);
+                self.apply_rule(rule, &mut new_facts)?;
             }
 
             let mut changed = false;
@@ -710,7 +708,7 @@ impl Database {
                 }
             }
             if !changed {
-                break;
+                return Ok(());
             }
         }
     }
@@ -726,24 +724,44 @@ impl Database {
 
         // Evaluate each stratum in order
         for stratum in stratification.iter() {
-            self.evaluate_stratum(&stratum.rules);
+            self.evaluate_stratum(&stratum.rules)?;
         }
 
         Ok(())
     }
 
-    fn apply_rule(&mut self, rule: &Rule, new_facts: &mut HashMap<String, Vec<Vec<Value>>>) {
+    fn apply_rule(
+        &mut self,
+        rule: &Rule,
+        new_facts: &mut HashMap<String, Vec<Vec<Value>>>,
+    ) -> Result<(), DatalogError> {
         let substitutions = self.find_substitutions(&rule.body);
-        for substitution in substitutions {
-            for head in &rule.heads {
-                if let Some(new_fact) = self.apply_substitution(head, &substitution) {
-                    new_facts
-                        .entry(head.0.clone())
-                        .or_insert(Vec::new())
-                        .push(new_fact);
+        for head in &rule.heads {
+            if head.1.is_aggregated() {
+                let mut aggregated_facts = HashMap::new();
+                for substitution in substitutions.iter() {
+                    // TODO:
+                    self.apply_aggregation(&mut aggregated_facts, head, &substitution)?;
+                }
+                let mut facts = Vec::new();
+                for (mut value, state) in aggregated_facts {
+                    for agg_state in state.iter() {
+                        let agg_value = agg_state.compute();
+                        value.insert(agg_state.index, agg_value);
+                    }
+                    facts.push(value);
+                }
+                new_facts.insert(head.0.clone(), facts);
+            } else {
+                let facts = new_facts.entry(head.0.clone()).or_insert(Vec::new());
+                for substitution in substitutions.iter() {
+                    let new_fact = self.apply_substitution(head, &substitution)?;
+                    facts.push(new_fact);
                 }
             }
         }
+
+        Ok(())
     }
 
     fn find_substitutions(&self, goals: &[(String, Tuple)]) -> Vec<Substitution<Value>> {
@@ -926,7 +944,7 @@ impl Database {
         &self,
         head: &(String, Tuple),
         substitution: &Substitution<Value>,
-    ) -> Option<Vec<Value>> {
+    ) -> Result<Vec<Value>, DatalogError> {
         let mut result = Vec::new();
 
         for term in head.1.iter() {
@@ -936,16 +954,147 @@ impl Database {
                     if let Some(value) = substitution.get(var_name) {
                         result.push(value.clone());
                     } else {
-                        return None; // Unbound variable
+                        return Err(DatalogError::UnboundVariable {
+                            variable: var_name.clone(),
+                        });
                     }
                 }
                 _ => {
-                    panic!("Aggregation terms are not supported in head");
+                    panic!(
+                        "This branch should not be reached, should be in apply_aggregation: {:?}",
+                        term
+                    );
                 }
             }
         }
 
-        Some(result)
+        Ok(result)
+    }
+
+    fn apply_aggregation(
+        &self,
+        aggregate_state: &mut HashMap<Vec<Value>, Vec<AggregationState>>,
+        head: &(String, Tuple),
+        substitution: &Substitution<Value>,
+    ) -> Result<(), DatalogError> {
+        let mut key = Vec::new();
+        let mut agg_state = Vec::new();
+        for (index, term) in head.1.iter().enumerate() {
+            match term {
+                Term::Value(v) => key.push(v.clone()),
+                Term::Variable(var_name) => {
+                    if let Some(value) = substitution.get(var_name) {
+                        key.push(value.clone());
+                    } else {
+                        return Err(DatalogError::UnboundVariable {
+                            variable: var_name.clone(),
+                        });
+                    }
+                }
+                Term::Aggregation(op, var_name) => {
+                    if let Some(value) = substitution.get(var_name) {
+                        agg_state.push(AggregationState {
+                            op: op.clone(),
+                            state: value.clone(),
+                            count: 1,
+                            index: index,
+                        });
+                    } else {
+                        return Err(DatalogError::UnboundVariable {
+                            variable: var_name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let entry = aggregate_state.entry(key).or_insert(Vec::new());
+
+        if entry.is_empty() {
+            for state in agg_state {
+                entry.push(state);
+            }
+        } else {
+            for (i, state) in agg_state.iter().enumerate() {
+                entry[i].combine(state);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+struct AggregationState {
+    op: AggregationOp,
+    state: Value,
+    count: u64,
+    index: usize,
+}
+
+impl AggregationState {
+    fn compute(&self) -> Value {
+        match self.op {
+            AggregationOp::Count => Value::integer(self.count as i64),
+            AggregationOp::Sum => self.state.clone(),
+            AggregationOp::Avg => match self.state {
+                Value::Integer(i) => Value::Float(i as f64 / self.count as f64),
+                Value::Float(f) => Value::Float(f / self.count as f64),
+                _ => panic!("Cannot compute avg of {:?}", self.state),
+            },
+
+            AggregationOp::Min => self.state.clone(),
+            AggregationOp::Max => self.state.clone(),
+        }
+    }
+    fn combine(&mut self, other: &AggregationState) {
+        match self.op {
+            AggregationOp::Count => {
+                self.count += other.count;
+            }
+            AggregationOp::Sum => {
+                self.state = Self::sum(&self.state, &other.state);
+            }
+            AggregationOp::Avg => {
+                self.state = Self::sum(&self.state, &other.state);
+                self.count += other.count;
+            }
+            AggregationOp::Min => {
+                self.state = Self::min(&self.state, &other.state);
+            }
+            AggregationOp::Max => {
+                self.state = Self::max(&self.state, &other.state);
+            }
+        }
+    }
+
+    fn sum(value: &Value, other: &Value) -> Value {
+        match (value, other) {
+            (Value::Integer(i), Value::Integer(j)) => Value::Integer(i + j),
+            (Value::Float(f), Value::Float(g)) => Value::Float(f + g),
+            (Value::Integer(i), Value::Float(f)) => Value::Float(*i as f64 + f),
+            (Value::Float(f), Value::Integer(i)) => Value::Float(f + *i as f64),
+            _ => panic!("Cannot sum {:?} and {:?}", value, other),
+        }
+    }
+
+    fn min(value: &Value, other: &Value) -> Value {
+        match (value, other) {
+            (Value::Integer(i), Value::Integer(j)) => Value::Integer(*i.min(j)),
+            (Value::Float(f), Value::Float(g)) => Value::Float(f.min(*g)),
+            (Value::Integer(i), Value::Float(f)) => Value::Float((*i as f64).min(*f)),
+            (Value::Float(f), Value::Integer(i)) => Value::Float(f.min(*i as f64)),
+            _ => panic!("Cannot take min of {:?} and {:?}", value, other),
+        }
+    }
+
+    fn max(value: &Value, other: &Value) -> Value {
+        match (value, other) {
+            (Value::Integer(i), Value::Integer(j)) => Value::Integer(*i.max(j)),
+            (Value::Float(f), Value::Float(g)) => Value::Float(f.max(*g)),
+            (Value::Integer(i), Value::Float(f)) => Value::Float((*i as f64).max(*f)),
+            (Value::Float(f), Value::Integer(i)) => Value::Float(f.max(*i as f64)),
+            _ => panic!("Cannot take max of {:?} and {:?}", value, other),
+        }
     }
 }
 
