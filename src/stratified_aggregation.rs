@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DatalogError {
     CyclicNegation { rules: HashSet<usize> },
     NonStratifiableProgram,
@@ -180,7 +180,12 @@ struct Stratifier {
     visited: Vec<bool>,
     strata_assignments: Vec<usize>,
     strata_counter: usize,
-    path: Vec<usize>,
+    path: Vec<PathElement>,
+}
+
+struct PathElement {
+    rule: usize,
+    is_aggregation: bool,
 }
 
 impl Stratifier {
@@ -304,13 +309,13 @@ impl Stratifier {
             // the same stratum to all the rules that is a part of the cycle we just found, effectively
             // joining the cycle into one stratum.
             for dep_rule in self.path.iter() {
-                if rule == *dep_rule {
+                if rule == dep_rule.rule {
                     self.strata_counter += 1;
                     stratum = self.strata_counter;
                     break;
                 }
-                if self.strata_assignments[*dep_rule] != 0 {
-                    stratum = self.strata_assignments[*dep_rule];
+                if self.strata_assignments[dep_rule.rule] != 0 {
+                    stratum = self.strata_assignments[dep_rule.rule];
                     break;
                 }
             }
@@ -318,10 +323,10 @@ impl Stratifier {
             // Assign the stratum to all the rules that is a part of the cycle we just found, effectively
             // joining the cycle into one stratum.
             for dep_rule in self.path.iter() {
-                if rule == *dep_rule {
+                if rule == dep_rule.rule {
                     break;
                 }
-                self.strata_assignments[*dep_rule] = stratum;
+                self.strata_assignments[dep_rule.rule] = stratum;
             }
 
             // Assign the stratum to the rule itself.
@@ -329,7 +334,10 @@ impl Stratifier {
 
             return Ok(());
         }
-        self.path.push(rule);
+        self.path.push(PathElement {
+            rule,
+            is_aggregation: false,
+        });
         current_visited.insert(rule);
 
         // Recursively find strata for all dependencies
@@ -1332,5 +1340,63 @@ mod tests {
         // bob is a grandparent and a single parent, so should not be in this relation
         assert!(!not_single_grandparent_relation
             .contains(&vec![Value::string("bob"), Value::string("charlie")]));
+    }
+
+    #[test]
+    fn test_negation_cycle_detection_too_strict() {
+        // This test checks that you can have cycles bellow the negation.
+        // - Rule 0: a(X) :- b(X)
+        // - Rule 1: b(X) :- a(X)
+        // - Rule 2: c(X) :- not a(X), d(X)
+
+        let mut db = Database::new();
+
+        // Add some facts
+        db.insert_facts(
+            "b",
+            vec![vec![Value::string("x")], vec![Value::string("y")]],
+        );
+        db.insert_facts("d", vec![vec![Value::string("y")]]);
+
+        // Rule 0: a(X) :- b(X)
+        let rule0 = Rule::new()
+            .head("a", Tuple::from_variables(vec!["X"]))
+            .body("b", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        // Rule 1: b(X) :- a(X)
+        let rule1 = Rule::new()
+            .head("b", Tuple::from_variables(vec!["X"]))
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        // Rule 2: c(X) :- not a(X), d(X)
+        let rule2 = Rule::new()
+            .head("c", Tuple::from_variables(vec!["X"]))
+            .body_negative("a", Tuple::from_variables(vec!["X"]))
+            .body("d", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        // Add rules in an order that might trigger the bug
+        db.add_rule(rule2);
+        db.add_rule(rule0);
+        db.add_rule(rule1);
+
+        // This should NOT fail with CyclicNegation error
+        // The cycle a->b->a doesn't involve negation
+        // The negation in rule2 is separate from the cycle
+        let result = db.evaluate();
+
+        assert!(result == Ok(()));
+
+        let a_relation = db.get_relation("a").unwrap();
+        let b_relation = db.get_relation("b").unwrap();
+        let c_relation = db.get_relation("c").unwrap();
+        let d_relation = db.get_relation("d").unwrap();
+
+        assert_eq!(a_relation.len(), 2);
+        assert_eq!(b_relation.len(), 2);
+        assert_eq!(c_relation.len(), 1);
+        assert_eq!(d_relation.len(), 1);
     }
 }
