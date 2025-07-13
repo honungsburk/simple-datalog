@@ -15,6 +15,7 @@ use std::hash::Hash;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DatalogError {
     CyclicNegation { rules: HashSet<usize> },
+    CyclicAggregation { rules: HashSet<usize> },
     NonStratifiableProgram,
 }
 
@@ -23,6 +24,9 @@ impl fmt::Display for DatalogError {
         match self {
             DatalogError::CyclicNegation { rules } => {
                 write!(f, "Cyclic negation detected: {:?}", rules)
+            }
+            DatalogError::CyclicAggregation { rules } => {
+                write!(f, "Cyclic aggregation detected: {:?}", rules)
             }
             DatalogError::NonStratifiableProgram => write!(f, "Program is not stratifiable"),
         }
@@ -64,22 +68,22 @@ impl Term {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AggregationOp {
     Count,
-    Sum,
-    Avg,
-    Min,
-    Max,
-    Mean,
+    // Sum,
+    // Avg,
+    // Min,
+    // Max,
+    // Mean,
 }
 
 impl fmt::Display for AggregationOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AggregationOp::Count => write!(f, "count"),
-            AggregationOp::Sum => write!(f, "sum"),
-            AggregationOp::Avg => write!(f, "avg"),
-            AggregationOp::Min => write!(f, "min"),
-            AggregationOp::Max => write!(f, "max"),
-            AggregationOp::Mean => write!(f, "mean"),
+            // AggregationOp::Sum => write!(f, "sum"),
+            // AggregationOp::Avg => write!(f, "avg"),
+            // AggregationOp::Min => write!(f, "min"),
+            // AggregationOp::Max => write!(f, "max"),
+            // AggregationOp::Mean => write!(f, "mean"),
         }
     }
 }
@@ -141,6 +145,12 @@ impl Tuple {
         self.terms.iter()
     }
 
+    pub fn is_aggregated(&self) -> bool {
+        self.terms
+            .iter()
+            .any(|term| matches!(term, Term::Aggregation(_, _)))
+    }
+
     pub fn from_values(values: Vec<Value>) -> Self {
         Tuple {
             terms: values.into_iter().map(Term::value).collect(),
@@ -181,20 +191,20 @@ struct Stratifier {
     strata_assignments: Vec<usize>,
     strata_counter: usize,
     path: Vec<PathElement>,
+    rule_is_aggregated: Vec<bool>,
 }
 
 #[derive(Debug)]
 struct PathElement {
     from_rule: usize,
-    to_rule: usize,
     is_negated: bool,
-    // is_aggregated: bool,
 }
 
 impl Stratifier {
     pub fn new(length: usize) -> Self {
         Self {
             visited: vec![false; length],
+            rule_is_aggregated: vec![false; length],
             strata_assignments: vec![0; length],
             strata_counter: 0,
             path: Vec::new(),
@@ -213,6 +223,7 @@ impl Stratifier {
         // Initialize dependency graph
         for (i, rule) in rules.iter().enumerate() {
             rule_deps.insert(i, Vec::new());
+            self.rule_is_aggregated[i] = rule.is_aggregated();
 
             // Track which rules produce each relation
             for relation_name in rule.produces() {
@@ -298,7 +309,6 @@ impl Stratifier {
         rule_deps: &HashMap<usize, Vec<(usize, bool)>>,
     ) -> Result<(), DatalogError> {
         if current_visited.contains(&rule) {
-            println!("Cycle detected: {:?}", self.path);
             // We have found a cycle, store the path on the stack
             let mut stratum = 0;
             // Find if any of the rules in the path have a stratum assignment
@@ -320,10 +330,13 @@ impl Stratifier {
             // Assign the stratum to all the rules that is a part of the cycle we just found, effectively
             // joining the cycle into one stratum.
             for dep_rule in self.path.iter().rev() {
-                println!("dep_rule: {:?}", dep_rule);
                 if dep_rule.is_negated {
-                    println!("Cyclic negation detected: {:?}", dep_rule);
                     return Err(DatalogError::CyclicNegation {
+                        rules: current_visited.clone(),
+                    });
+                }
+                if self.rule_is_aggregated[dep_rule.from_rule] {
+                    return Err(DatalogError::CyclicAggregation {
                         rules: current_visited.clone(),
                     });
                 }
@@ -344,9 +357,7 @@ impl Stratifier {
         for (dep_rule, rule_is_negated) in rule_deps.get(&rule).unwrap_or(&Vec::new()) {
             self.path.push(PathElement {
                 from_rule: rule,
-                to_rule: *dep_rule,
                 is_negated: *rule_is_negated,
-                // is_aggregated: false,
             });
             if !self.visited[*dep_rule] {
                 self.find_strata(*dep_rule, current_visited, rule_deps)?;
@@ -522,6 +533,10 @@ impl Rule {
         RuleBuilder::new()
     }
 
+    pub fn is_aggregated(&self) -> bool {
+        self.heads.iter().any(|(_, tuple)| tuple.is_aggregated())
+    }
+
     /// Get all relations that this rule depends on (reads from)
     /// The boolean indicates whether the dependency is positive or negative
     /// true means negative, false means positive
@@ -678,10 +693,7 @@ impl Database {
 
     /// Evaluate a single stratum
     fn evaluate_stratum(&mut self, rules: &[Rule]) {
-        let mut iteration = 0;
         loop {
-            println!("Iteration: {:?}", iteration);
-            iteration += 1;
             let mut new_facts = HashMap::new();
             for rule in rules {
                 self.apply_rule(rule, &mut new_facts);
@@ -714,7 +726,6 @@ impl Database {
 
         // Evaluate each stratum in order
         for stratum in stratification.iter() {
-            println!("Evaluating stratum: {:?}", stratum);
             self.evaluate_stratum(&stratum.rules);
         }
 
@@ -723,9 +734,6 @@ impl Database {
 
     fn apply_rule(&mut self, rule: &Rule, new_facts: &mut HashMap<String, Vec<Vec<Value>>>) {
         let substitutions = self.find_substitutions(&rule.body);
-        println!("Rule: {:?}", rule);
-        println!("Substitutions: {:?}", substitutions);
-
         for substitution in substitutions {
             for head in &rule.heads {
                 if let Some(new_fact) = self.apply_substitution(head, &substitution) {
