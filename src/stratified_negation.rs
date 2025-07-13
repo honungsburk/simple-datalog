@@ -1233,9 +1233,9 @@ mod tests {
             .body_negative("single_parent", Tuple::from_variables(vec!["X"]))
             .build();
 
+        db.add_rule(not_single_grandparent_rule);
         db.add_rule(grandparent_rule);
         db.add_rule(single_parent_rule);
-        db.add_rule(not_single_grandparent_rule);
         db.evaluate().unwrap();
 
         let grandparent_relation = db.get_relation("grandparent").unwrap();
