@@ -22,7 +22,10 @@ as an intermediate step I'm implementing a simple datalog engine here without al
     - [ ] Incremental Maintenance for Negation and Aggregates
 **Extensions:**
 - [x] Stratified Negation
-- [ ] Stratified Aggregation
+- [x] Stratified Aggregation
+- [ ] Aggregation Through Recursion
+    - monotonic aggregation by Ramakrishnan
+    - well-founded semantics due to Van Gelder
 - [ ] Functors?
 - [ ] Expressions
 **Improvements**
