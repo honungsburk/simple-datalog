@@ -1665,4 +1665,43 @@ mod tests {
             &vec![Value::integer(3)]
         );
     }
+
+    #[test]
+    fn test_aggregation_cycle() {
+        let mut db = Database::new();
+
+        db.insert_facts(
+            "a",
+            vec![
+                vec![Value::integer(1)],
+                vec![Value::integer(2)],
+                vec![Value::integer(4)],
+            ],
+        );
+
+        // let rule = Rule::new()
+        //     .head(
+        //         "count",
+        //         Tuple::new(vec![Term::aggregation(AggregationOp::Count, "X")]),
+        //     )
+        //     .body("a", Tuple::from_variables(vec!["X"]))
+        //     .build();
+
+        let rule = Rule::new()
+            .head(
+                "a",
+                Tuple::new(vec![Term::aggregation(AggregationOp::Count, "X")]),
+            )
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        db.add_rule(rule);
+
+        let result = db.evaluate();
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(DatalogError::CyclicAggregation { rules: _ })
+        ));
+    }
 }
