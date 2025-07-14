@@ -7,6 +7,7 @@
 //! The big changes are in the `find_substitutions` function and the relation struct.
 
 use crate::atom::Atom;
+use crate::expression::Expr;
 use crate::value::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -118,6 +119,28 @@ impl fmt::Display for Term {
             }
         }
     }
+}
+
+pub enum Clause {
+    Relation(RelationPattern), // p(X, Y)
+    Expression(Expr),          // X + Y > 5
+    Binding(Binding),          // X = 5
+}
+
+pub struct RelationPattern {
+    pub name: String,
+    pub arguments: Vec<Term>,
+    pub is_negated: bool,
+}
+
+pub struct Binding {
+    pub variable: String,
+    pub value: Expr,
+}
+
+pub struct AggregateClause {
+    pub operation: AggregationOp,
+    pub variable: String,
 }
 
 /// A tuple of terms representing a fact or goal
