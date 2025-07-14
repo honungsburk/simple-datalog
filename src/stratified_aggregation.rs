@@ -241,12 +241,10 @@ impl Stratifier {
             for (relation_name, is_negated) in rule.dependencies() {
                 if let Some(producer_rules) = relation_to_rules.get(&relation_name) {
                     for &producer_rule in producer_rules {
-                        if producer_rule != i {
-                            rule_deps
-                                .get_mut(&i)
-                                .unwrap()
-                                .push((producer_rule, is_negated));
-                        }
+                        rule_deps
+                            .get_mut(&i)
+                            .unwrap()
+                            .push((producer_rule, is_negated));
                     }
                 }
             }
