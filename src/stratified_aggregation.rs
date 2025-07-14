@@ -1677,14 +1677,6 @@ mod tests {
             ],
         );
 
-        // let rule = Rule::new()
-        //     .head(
-        //         "count",
-        //         Tuple::new(vec![Term::aggregation(AggregationOp::Count, "X")]),
-        //     )
-        //     .body("a", Tuple::from_variables(vec!["X"]))
-        //     .build();
-
         let rule = Rule::new()
             .head(
                 "a",
