@@ -67,6 +67,10 @@ impl Term {
     pub fn boolean(value: bool) -> Self {
         Term::Value(Value::boolean(value))
     }
+
+    pub fn aggregation<S: Into<String>>(op: AggregationOp, var_name: S) -> Self {
+        Term::Aggregation(op, var_name.into())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1568,5 +1572,97 @@ mod tests {
         assert_eq!(b_relation.len(), 4);
         assert_eq!(c_relation.len(), 2);
         assert_eq!(d_relation.len(), 2);
+    }
+
+    #[test]
+    fn test_aggregation() {
+        let mut db = Database::new();
+
+        db.insert_facts(
+            "a",
+            vec![
+                vec![Value::integer(1)],
+                vec![Value::integer(2)],
+                vec![Value::integer(3)],
+            ],
+        );
+
+        let rule = Rule::new()
+            .head(
+                "count",
+                Tuple::new(vec![Term::aggregation(AggregationOp::Count, "X")]),
+            )
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        let rule2 = Rule::new()
+            .head(
+                "sum",
+                Tuple::new(vec![Term::aggregation(AggregationOp::Sum, "X")]),
+            )
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        let rule3 = Rule::new()
+            .head(
+                "avg",
+                Tuple::new(vec![Term::aggregation(AggregationOp::Avg, "X")]),
+            )
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        let rule4 = Rule::new()
+            .head(
+                "min",
+                Tuple::new(vec![Term::aggregation(AggregationOp::Min, "X")]),
+            )
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        let rule5 = Rule::new()
+            .head(
+                "max",
+                Tuple::new(vec![Term::aggregation(AggregationOp::Max, "X")]),
+            )
+            .body("a", Tuple::from_variables(vec!["X"]))
+            .build();
+
+        db.add_rule(rule);
+        db.add_rule(rule2);
+        db.add_rule(rule3);
+        db.add_rule(rule4);
+        db.add_rule(rule5);
+        db.evaluate().unwrap();
+
+        let count_relation = db.get_relation("count").unwrap();
+        assert_eq!(count_relation.len(), 1);
+        assert_eq!(
+            count_relation.iter().next().unwrap(),
+            &vec![Value::integer(3)]
+        );
+
+        let sum_relation = db.get_relation("sum").unwrap();
+        assert_eq!(sum_relation.len(), 1);
+        assert_eq!(
+            sum_relation.iter().next().unwrap(),
+            &vec![Value::integer(6)]
+        );
+
+        let avg_relation = db.get_relation("avg").unwrap();
+        assert_eq!(avg_relation.len(), 1);
+
+        let min_relation = db.get_relation("min").unwrap();
+        assert_eq!(min_relation.len(), 1);
+        assert_eq!(
+            min_relation.iter().next().unwrap(),
+            &vec![Value::integer(1)]
+        );
+
+        let max_relation = db.get_relation("max").unwrap();
+        assert_eq!(max_relation.len(), 1);
+        assert_eq!(
+            max_relation.iter().next().unwrap(),
+            &vec![Value::integer(3)]
+        );
     }
 }
