@@ -7,7 +7,7 @@
 //! The big changes are in the `find_substitutions` function and the relation struct.
 
 use crate::atom::Atom;
-use crate::expression::Expr;
+use crate::expression::{self, Expr};
 use crate::value::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -20,6 +20,7 @@ pub enum DatalogError {
     NonStratifiableProgram,
     UnboundVariable { variable: String },
     InvalidClauseInHead(Clause),
+    ExpressionEvaluationError(String),
 }
 
 impl fmt::Display for DatalogError {
@@ -37,6 +38,9 @@ impl fmt::Display for DatalogError {
             }
             DatalogError::InvalidClauseInHead(clause) => {
                 write!(f, "Invalid clause in head: {}", clause)
+            }
+            DatalogError::ExpressionEvaluationError(e) => {
+                write!(f, "Expression evaluation error: {}", e)
             }
         }
     }
@@ -432,6 +436,12 @@ impl Stratification {
 #[derive(Debug, Clone)]
 pub struct Substitution<T>(HashMap<String, T>);
 
+impl expression::VariableContext for Substitution<Value> {
+    fn get_variable(&self, variable: &str) -> Option<Value> {
+        self.0.get(variable).cloned()
+    }
+}
+
 impl<T> Substitution<T> {
     pub fn new() -> Self {
         Substitution(HashMap::new())
@@ -772,7 +782,7 @@ impl Database {
         rule: &Rule,
         new_facts: &mut HashMap<String, Vec<Vec<Value>>>,
     ) -> Result<(), DatalogError> {
-        let substitutions = self.find_substitutions(&rule.body);
+        let substitutions = self.find_substitutions(&rule.body)?;
         for head in &rule.heads {
             match head {
                 Clause::Relation(relation) => {
@@ -811,9 +821,12 @@ impl Database {
         Ok(())
     }
 
-    fn find_substitutions(&self, goals: &[Clause]) -> Vec<Substitution<Value>> {
+    fn find_substitutions(
+        &self,
+        goals: &[Clause],
+    ) -> Result<Vec<Substitution<Value>>, DatalogError> {
         if goals.is_empty() {
-            return vec![Substitution::new()];
+            return Ok(vec![Substitution::new()]);
         }
 
         let mut all_results = Vec::new();
@@ -839,26 +852,74 @@ impl Database {
         //
         // This can be rewritten as:
         // 1. 𝜟X, 𝜟Y + Y, 𝜟Z + Z
-        // 2. X, 𝜟Y, 𝜟Z + Z
-        // 3. X, Y, 𝜟Z
+        // 2.  X,     𝜟Y, 𝜟Z + Z
+        // 3.  X,      Y,     𝜟Z
         // Count: n a.k.a. 3
         //
         // This last one reduces the number of iteration of the outer loop which is good when there are many goals and
         // is the one we want to use.
+        //
+        // There is some complication in the case of clauses that are not relation patterns. But basically all we need to do is
+        // skip them in the outer loop.
+        //
+        // This can be rewritten as:
+        // 1. 𝜟X, X > 3, 𝜟Y + Y, 𝜟Z + Z
+        // 2.  X, X > 3,     𝜟Y, 𝜟Z + Z
+        // 3.  X, X > 3,      Y,     𝜟Z
+        //
+        // Note that where we should pick up the computation is always where the single 𝜟 was last time.
 
         // We use the starting point to avoid re-evaluating the same goal multiple times.
         let mut starting_point = Some(vec![Substitution::new()]);
 
+        let mut start_index = 0;
+        let mut deltas_left = true;
+
         for delta_goal_idx in 0..goals.len() {
+            if delta_goal_idx < start_index || !deltas_left {
+                continue;
+            }
+            // Deals with the scenario where the ending clauses are not relation patterns so we do not
+            // need to recompute since all facts are already computed.
+            deltas_left = false;
+
             // Use take() to avoid cloning the starting point
             let mut results = starting_point.take().unwrap_or(vec![Substitution::new()]);
 
             // saturating sub is used to avoid going out of bounds a.k.a. 0 - 1 = 0 instead of panicking
-            let start_index = delta_goal_idx.saturating_sub(1);
             for goal_idx in start_index..goals.len() {
                 match &goals[goal_idx] {
+                    Clause::Expression(expr) => {
+                        let mut new_results = Vec::new();
+                        for substitution in results.drain(..) {
+                            let value = expression::eval(expr, &substitution)
+                                .map_err(|e| DatalogError::ExpressionEvaluationError(e))?;
+
+                            if value.is_truthy() {
+                                new_results.push(substitution);
+                            }
+                        }
+                    }
+                    Clause::Binding(Binding { variable, value }) => {
+                        let mut new_results = Vec::new();
+                        for mut substitution in results.drain(..) {
+                            let value = expression::eval(value, &substitution)
+                                .map_err(|e| DatalogError::ExpressionEvaluationError(e))?;
+
+                            if let Some(other_value) = substitution.get(variable) {
+                                if *other_value == value {
+                                    new_results.push(substitution);
+                                }
+                            } else {
+                                substitution.insert(variable.clone(), value);
+                                new_results.push(substitution);
+                            }
+                        }
+                    }
+
                     Clause::Relation(goal_relation) => {
                         if goal_idx == delta_goal_idx {
+                            start_index = delta_goal_idx;
                             starting_point = Some(results.clone());
                         }
                         if goal_relation.is_negated {
@@ -893,6 +954,7 @@ impl Database {
                                             }
                                         }
                                     } else {
+                                        deltas_left = true;
                                         // Use both stable and delta tuples
                                         for tuple in relation.iter() {
                                             if let Some(_) = self.unify_tuple(
@@ -940,6 +1002,7 @@ impl Database {
                                             }
                                         }
                                     } else {
+                                        deltas_left = true;
                                         // Use both stable and delta tuples
                                         for tuple in relation.iter() {
                                             if let Some(new_sub) = self.unify_tuple(
@@ -956,16 +1019,13 @@ impl Database {
                             results = new_results;
                         }
                     }
-                    _ => {
-                        panic!("Invalid clause in body: {:?}", goals[goal_idx]);
-                    }
                 }
             }
 
             all_results.extend(results);
         }
 
-        all_results
+        Ok(all_results)
     }
 
     fn unify_tuple(

@@ -31,6 +31,16 @@ impl Value {
     pub fn boolean(value: bool) -> Self {
         Self::Boolean(value)
     }
+
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Boolean(b) => *b,
+            Value::Integer(i) => *i != 0,
+            Value::Float(f) => *f != 0.0,
+            Value::String(s) => !s.is_empty(),
+            _ => true,
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
