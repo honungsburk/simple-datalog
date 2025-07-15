@@ -783,6 +783,7 @@ impl Database {
         new_facts: &mut HashMap<String, Vec<Vec<Value>>>,
     ) -> Result<(), DatalogError> {
         let substitutions = self.find_substitutions(&rule.body)?;
+
         for head in &rule.heads {
             match head {
                 Clause::Relation(relation) => {
@@ -921,6 +922,8 @@ impl Database {
                         if goal_idx == delta_goal_idx {
                             start_index = delta_goal_idx;
                             starting_point = Some(results.clone());
+                        } else if goal_idx > delta_goal_idx {
+                            deltas_left = true;
                         }
                         if goal_relation.is_negated {
                             // Negative goal, so there can not be ANY matching tuple
@@ -954,7 +957,6 @@ impl Database {
                                             }
                                         }
                                     } else {
-                                        deltas_left = true;
                                         // Use both stable and delta tuples
                                         for tuple in relation.iter() {
                                             if let Some(_) = self.unify_tuple(
@@ -977,6 +979,7 @@ impl Database {
                         } else {
                             // Positive goal, so we can use any existing substitution that matches the pattern
                             let mut new_results = Vec::new();
+
                             if let Some(relation) = self.relations.get(&goal_relation.name) {
                                 for substitution in results.iter() {
                                     if goal_idx == delta_goal_idx {
@@ -1002,7 +1005,6 @@ impl Database {
                                             }
                                         }
                                     } else {
-                                        deltas_left = true;
                                         // Use both stable and delta tuples
                                         for tuple in relation.iter() {
                                             if let Some(new_sub) = self.unify_tuple(
