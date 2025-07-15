@@ -576,30 +576,14 @@ impl fmt::Display for Rule {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            match clause {
-                Clause::Relation(relation) => {
-                    write!(f, "{}", relation)?;
-                }
-                _ => {}
-            }
+            write!(f, "{}", clause)?;
         }
         write!(f, " :- ")?;
         for (i, clause) in self.body.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            match clause {
-                Clause::Relation(relation) => {
-                    write!(f, "{}", relation)?;
-                }
-                Clause::Expression(expr) => {
-                    write!(f, "{}", expr)?;
-                }
-                Clause::Binding(binding) => {
-                    write!(f, "{} = {}", binding.variable, binding.value)?;
-                }
-                _ => {}
-            }
+            write!(f, "{}", clause)?;
         }
         Ok(())
     }
