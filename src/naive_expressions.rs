@@ -132,7 +132,7 @@ impl fmt::Display for Term {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Clause {
     Relation(RelationPattern), // p(X, Y)
-    Expression(Expr),          // X + Y > 5
+    Filter(Expr),              // X + Y > 5
     Binding(Binding),          // X = 5
 }
 
@@ -140,7 +140,7 @@ impl fmt::Display for Clause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Clause::Relation(relation) => write!(f, "{}", relation)?,
-            Clause::Expression(expr) => write!(f, "{}", expr)?,
+            Clause::Filter(expr) => write!(f, "{}", expr)?,
             Clause::Binding(binding) => write!(f, "{} = {}", binding.variable, binding.value)?,
         }
         Ok(())
@@ -637,7 +637,7 @@ impl RuleBuilder {
     }
 
     pub fn body_expr(mut self, expr: Expr) -> Self {
-        self.body.push(Clause::Expression(expr));
+        self.body.push(Clause::Filter(expr));
         self
     }
 
@@ -900,7 +900,7 @@ impl Database {
             // saturating sub is used to avoid going out of bounds a.k.a. 0 - 1 = 0 instead of panicking
             for goal_idx in start_index..goals.len() {
                 match &goals[goal_idx] {
-                    Clause::Expression(expr) => {
+                    Clause::Filter(expr) => {
                         let mut new_results = Vec::new();
                         for substitution in results.drain(..) {
                             let value = expression::eval(expr, &substitution)
