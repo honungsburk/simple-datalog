@@ -631,6 +631,16 @@ impl RuleBuilder {
         self
     }
 
+    pub fn body_binding(mut self, binding: Binding) -> Self {
+        self.body.push(Clause::Binding(binding));
+        self
+    }
+
+    pub fn body_expr(mut self, expr: Expr) -> Self {
+        self.body.push(Clause::Expression(expr));
+        self
+    }
+
     pub fn body_vars<S: Into<String>>(mut self, name: S, terms: Vec<&str>) -> Self {
         self.body.push(Clause::Relation(RelationPattern {
             name: name.into(),
@@ -1227,6 +1237,8 @@ impl AggregationState {
 
 #[cfg(test)]
 mod tests {
+    use crate::expression::BinaryOp;
+
     use super::*;
 
     #[test]
@@ -1755,5 +1767,67 @@ mod tests {
             result,
             Err(DatalogError::CyclicAggregation { rules: _ })
         ));
+    }
+
+    #[test]
+    fn test_binding() {
+        let mut db = Database::new();
+        db.insert_facts(
+            "a",
+            vec![
+                vec![Value::integer(1)],
+                vec![Value::integer(2)],
+                vec![Value::integer(3)],
+            ],
+        );
+
+        let rule = Rule::new()
+            .head("b", vec![Term::variable("Y")])
+            .body_vars("a", vec!["X"])
+            .body_binding(Binding {
+                variable: "Y".to_string(),
+                value: Expr::binary(BinaryOp::Add, Expr::variable("X"), Expr::variable("X")),
+            })
+            .build();
+
+        db.add_rule(rule);
+        db.evaluate().unwrap();
+
+        let b_relation = db.get_relation("b").unwrap();
+        assert_eq!(b_relation.len(), 3);
+        assert!(b_relation.contains(&vec![Value::integer(2)]));
+        assert!(b_relation.contains(&vec![Value::integer(4)]));
+        assert!(b_relation.contains(&vec![Value::integer(6)]));
+    }
+
+    #[test]
+    fn test_expression() {
+        let mut db = Database::new();
+        db.insert_facts(
+            "a",
+            vec![
+                vec![Value::integer(1)],
+                vec![Value::integer(2)],
+                vec![Value::integer(3)],
+            ],
+        );
+
+        let rule = Rule::new()
+            .head("b", vec![Term::variable("Y")])
+            .body_vars("a", vec!["X"])
+            .body_expr(Expr::binary(
+                BinaryOp::Ge,
+                Expr::variable("X"),
+                Expr::int(2),
+            ))
+            .build();
+
+        db.add_rule(rule);
+        db.evaluate().unwrap();
+
+        let b_relation = db.get_relation("b").unwrap();
+        assert_eq!(b_relation.len(), 2);
+        assert!(b_relation.contains(&vec![Value::integer(2)]));
+        assert!(b_relation.contains(&vec![Value::integer(3)]));
     }
 }
