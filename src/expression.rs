@@ -9,11 +9,12 @@
 //! simpler then what they are doing.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::atom::Atom;
 use crate::value::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
     Literal(Value),
     Variable(String),
@@ -66,7 +67,19 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expr::Literal(literal) => write!(f, "{}", literal)?,
+            Expr::Variable(variable) => write!(f, "{}", variable)?,
+            Expr::Binary(op, left, right) => write!(f, "{} {} {}", left, op, right)?,
+            Expr::Unary(op, expr) => write!(f, "{} {}", op, expr)?,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     And,
     Or,
@@ -84,10 +97,42 @@ pub enum BinaryOp {
     Pow,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BinaryOp::And => write!(f, "and")?,
+            BinaryOp::Or => write!(f, "or")?,
+            BinaryOp::Eq => write!(f, "==")?,
+            BinaryOp::Ne => write!(f, "!=")?,
+            BinaryOp::Lt => write!(f, "<")?,
+            BinaryOp::Le => write!(f, "<=")?,
+            BinaryOp::Gt => write!(f, ">")?,
+            BinaryOp::Ge => write!(f, ">=")?,
+            BinaryOp::Add => write!(f, "+")?,
+            BinaryOp::Sub => write!(f, "-")?,
+            BinaryOp::Mul => write!(f, "*")?,
+            BinaryOp::Div => write!(f, "/")?,
+            BinaryOp::Mod => write!(f, "%")?,
+            BinaryOp::Pow => write!(f, "**")?,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Not,
     Negate,
+}
+
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UnaryOp::Not => write!(f, "not")?,
+            UnaryOp::Negate => write!(f, "-")?,
+        }
+        Ok(())
+    }
 }
 
 /// Optimize an expression by replacing constants and variables with their values.
