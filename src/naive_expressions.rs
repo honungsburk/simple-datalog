@@ -910,6 +910,7 @@ impl Database {
                                 new_results.push(substitution);
                             }
                         }
+                        results = new_results;
                     }
                     Clause::Binding(Binding { variable, value }) => {
                         let mut new_results = Vec::new();
@@ -926,6 +927,7 @@ impl Database {
                                 new_results.push(substitution);
                             }
                         }
+                        results = new_results;
                     }
 
                     Clause::Relation(goal_relation) => {
@@ -1813,7 +1815,7 @@ mod tests {
         );
 
         let rule = Rule::new()
-            .head("b", vec![Term::variable("Y")])
+            .head("b", vec![Term::variable("X")])
             .body_vars("a", vec!["X"])
             .body_expr(Expr::binary(
                 BinaryOp::Ge,
